@@ -53,7 +53,7 @@ const Atlas = (() => {
       margin: 0,
       gap: 0,
       snap: true,
-      grid: 32,
+      grid: 16,
       gapFill: 'color', // color | bleed
       gapColor: '#D0C1B1',
       mix: 'oklab', // oklab | srgb
@@ -144,7 +144,7 @@ const Atlas = (() => {
     p.margin = num(src.margin, 0, 0, 256);
     p.gap = num(src.gap, 0, 0, 256);
     p.snap = src.snap !== false;
-    p.grid = GRIDS.includes(+src.grid) ? +src.grid : 32;
+    p.grid = GRIDS.includes(+src.grid) ? +src.grid : 16;
     p.gapFill = src.gapFill === 'bleed' ? 'bleed' : 'color';
     p.mix = src.mix === 'srgb' ? 'srgb' : 'oklab';
     p.dither = src.dither !== false;
