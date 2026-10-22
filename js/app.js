@@ -223,9 +223,9 @@
       ${range({ label: 'Outer margin', bind: 'p:margin', min: 0, max: 128, value: p.margin, fmt: 'px' })}
       ${range({ label: 'Gap between cells', bind: 'p:gap', min: 0, max: 64, value: p.gap, fmt: 'px' })}
       ${toggle('p:snap', p.snap, 'Snap to grid', 'Dragged edges stick to the grid; hold Ctrl to move freely')}
-      ${p.snap ? `<div class="field"><div class="field-top"><label>Grid size</label></div>
+      <div class="field" id="gridField"${p.snap ? '' : ' hidden'}><div class="field-top"><label>Grid size</label></div>
         <select data-bind="p:grid" aria-label="Grid size">${Atlas.GRIDS.map(g =>
-          `<option value="${g}"${g === p.grid ? ' selected' : ''}>${g} px</option>`).join('')}</select></div>` : ''}
+          `<option value="${g}"${g === p.grid ? ' selected' : ''}>${g} px</option>`).join('')}</select></div>
       <div class="field"><div class="field-top"><label>Gaps</label></div>
         ${seg('p:gapFill', p.gapFill, [['color', 'Colour'], ['bleed', 'Cell bleed']])}</div>
       ${p.gapFill === 'color'
@@ -830,11 +830,15 @@
     } else if (t.matches('input[type=color][data-bind]')) commit();
     else if (t.matches('input[type=checkbox][data-bind]')) {
       apply(t.dataset.bind, t.checked);
-      if (t.dataset.bind.startsWith('p:')) renderSheet();
+      if (t.dataset.bind === 'p:snap') {
+        $('#gridField').hidden = !t.checked;
+        flashGrid();
+      }
       draw();
       commit();
     } else if (t.matches('select[data-bind]')) {
       apply(t.dataset.bind, +t.value);
+      flashGrid();
       commit();
     } else if (t.id === 'projName') {
       project.name = t.value.trim() || 'Atlas';
@@ -910,6 +914,7 @@
       b0: lo + (wa / sum) * avail,
       start: x ? e.clientX : e.clientY,
       scale: x ? project.width / view.clientWidth : project.height / view.clientHeight,
+      moved: false,
     };
     document.body.classList.add(x ? 'dragging-x' : 'dragging-y');
     showGrid(true);
@@ -918,6 +923,9 @@
   window.addEventListener('pointermove', e => {
     if (!drag) return;
     const pos = drag.axis === 'x' ? e.clientX : e.clientY;
+    // A click without movement must not snap the edge somewhere else.
+    if (!drag.moved && Math.abs(pos - drag.start) < 3) return;
+    drag.moved = true;
     let b = drag.b0 + (pos - drag.start) * drag.scale;
     const minPx = Math.max(1, drag.avail * 0.02);
     const lo = drag.lo + minPx;
@@ -930,8 +938,8 @@
     const wa = ((b - drag.lo) / drag.avail) * drag.sum;
     drag.list[drag.i][drag.key] = wa;
     drag.list[drag.i + 1][drag.key] = drag.wa + drag.wb - wa;
-    showDragTip(e);
     draw();
+    showDragTip(e);
   });
 
   // Faint grid over the preview while dragging, when it is dense enough to read.
@@ -945,13 +953,24 @@
     ov.style.backgroundSize = show ? `${step}px ${step}px` : '';
   }
 
+  // Shows the grid for a moment after its settings change.
+  let gridFlash = 0;
+  function flashGrid() {
+    clearTimeout(gridFlash);
+    showGrid(true);
+    gridFlash = setTimeout(() => { if (!drag) showGrid(false); }, 1200);
+  }
+
+  let tipEl = null;
+  const dragTip = () => tipEl || (tipEl = document.body.appendChild(Object.assign(document.createElement('div'), { className: 'drag-tip' })));
+
   // Sizes of the two cells or rows next to the dragged gap, in export pixels.
   function showDragTip(e) {
     const X = Atlas.layout(project, project.width, project.height);
     const sizes = drag.axis === 'x'
       ? X.rows[drag.ri].cells.slice(drag.i, drag.i + 2).map(C => C.x1 - C.x0)
       : X.rows.slice(drag.i, drag.i + 2).map(R => R.y1 - R.y0);
-    const tip = $('#dragTip');
+    const tip = dragTip();
     tip.textContent = `${sizes[0]} px | ${sizes[1]} px`;
     tip.style.left = e.clientX + 16 + 'px';
     tip.style.top = e.clientY + 16 + 'px';
@@ -962,8 +981,9 @@
     if (!drag) return;
     drag = null;
     showGrid(false);
-    $('#dragTip').classList.remove('show');
+    dragTip().classList.remove('show');
     document.body.classList.remove('dragging-x', 'dragging-y');
+    draw();
     // The click that ends a drag must not select the cell under the pointer.
     const swallow = ev => ev.stopPropagation();
     window.addEventListener('click', swallow, { capture: true, once: true });
