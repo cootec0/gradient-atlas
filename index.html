@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gradient Atlas</title>
+<meta name="description" content="Browser editor for colour and gradient atlas textures.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='13' height='13' rx='3' fill='%2350954A'/%3E%3Crect x='17' y='2' width='13' height='13' rx='3' fill='%23ABC35B'/%3E%3Crect x='2' y='17' width='13' height='13' rx='3' fill='%236B4A37'/%3E%3Crect x='17' y='17' width='13' height='13' rx='3' fill='%23E68237'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="i-paste" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M16 5h2a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h2"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+  <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.8"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-dice" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></symbol>
+  <symbol id="i-arrow-dr" viewBox="0 0 24 24"><path d="M7 7l10 10M17 9v8H9"/></symbol>
+  <symbol id="i-arrow-ur" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+  <symbol id="i-swap" viewBox="0 0 24 24"><path d="M7 7h13l-4-4M17 17H4l4 4"/></symbol>
+  <symbol id="i-spread" viewBox="0 0 24 24"><path d="M5 5v14M12 5v14M19 5v14"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
+  <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-rows" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/></symbol>
+</svg>
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg-a" x1="0" x2="1"><stop offset="0" stop-color="#50954A"/><stop offset="1" stop-color="#ABC35B"/></linearGradient>
+          <linearGradient id="lg-b" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#F0B57C"/><stop offset="1" stop-color="#A44D14"/></linearGradient>
+        </defs>
+        <rect x="2" y="2" width="13" height="13" rx="3" fill="url(#lg-a)"/>
+        <rect x="17" y="2" width="13" height="13" rx="3" fill="#2A5341"/>
+        <rect x="2" y="17" width="13" height="13" rx="3" fill="#6B4A37"/>
+        <rect x="17" y="17" width="13" height="13" rx="3" fill="url(#lg-b)"/>
+      </svg>
+      <span>Gradient Atlas</span>
+    </div>
+    <input id="projName" class="proj-name" type="text" placeholder="Atlas name" spellcheck="false" aria-label="Atlas name">
+    <div class="sep"></div>
+    <button class="icon-btn" id="undo" data-act="undo" title="Undo (Ctrl+Z)"><svg class="ic"><use href="#i-undo"/></svg></button>
+    <button class="icon-btn" id="redo" data-act="redo" title="Redo (Ctrl+Y)"><svg class="ic"><use href="#i-redo"/></svg></button>
+    <div class="menu">
+      <button class="btn ghost" data-menu>New <svg class="ic"><use href="#i-chev"/></svg></button>
+      <div class="menu-list">
+        <button data-act="new-example"><svg class="ic"><use href="#i-sparkle"/></svg><span><b>Example atlas</b><small>Greens, olives, browns and orange</small></span></button>
+        <button data-act="new-blank"><svg class="ic"><use href="#i-grid"/></svg><span><b>Blank grid</b><small>3 × 3 solid cells, your palette</small></span></button>
+        <button data-act="new-random"><svg class="ic"><use href="#i-dice"/></svg><span><b>Surprise me</b><small>Random layout and styles, your palette</small></span></button>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn ghost" data-act="open" title="Open an exported atlas PNG to keep editing it"><svg class="ic"><use href="#i-folder"/></svg> Open PNG</button>
+    <div class="size-pick" title="Export size in pixels">
+      <select id="sizeW" aria-label="Width"></select>
+      <span>×</span>
+      <select id="sizeH" aria-label="Height"></select>
+    </div>
+    <button class="btn primary" data-act="export" title="Export PNG (Ctrl+S)"><svg class="ic"><use href="#i-download"/></svg> Export PNG</button>
+  </header>
+
+  <main class="main">
+    <aside class="panel left">
+      <div class="block">
+        <div class="block-head"><span class="block-title">Palette <span class="count" id="palCount"></span></span></div>
+        <div class="pal-list" id="palList"></div>
+        <button class="btn ghost wide" data-act="pal-add"><svg class="ic"><use href="#i-plus"/></svg> Add colour</button>
+        <div class="gen-row">
+          <select id="harmony" aria-label="Palette style"></select>
+          <button class="btn" data-act="pal-gen" title="Regenerate unlocked colours (Space)"><svg class="ic"><use href="#i-dice"/></svg> Generate</button>
+        </div>
+        <div class="hint">Locked colours stay put. Press <kbd>Space</kbd> to roll again.</div>
+      </div>
+      <div class="block">
+        <div class="block-head"><span class="block-title">Shading</span></div>
+        <div id="shading"></div>
+      </div>
+      <div class="block">
+        <div class="block-head"><span class="block-title">Sheet</span></div>
+        <div id="sheet"></div>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="stage-inner" id="stageInner">
+        <div class="canvas-box">
+          <canvas id="view"></canvas>
+          <div id="overlay"></div>
+        </div>
+      </div>
+      <div class="stage-bar">
+        <button class="btn sm" data-act="row-add-end"><svg class="ic"><use href="#i-rows"/></svg> Add row</button>
+        <span>Click a cell to edit it · drag the gaps to resize</span>
+        <span class="spacer"></span>
+        <span id="sizeInfo" class="mono"></span>
+      </div>
+    </section>
+
+    <aside class="panel right" id="inspector"></aside>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="drop">Drop a Gradient Atlas PNG to open it</div>
+<input type="file" id="fileInput" accept="image/png" hidden>
+
+<script src="js/color.js"></script>
+<script src="js/atlas.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
