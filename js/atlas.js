@@ -4,6 +4,7 @@ const Atlas = (() => {
   const REF = 1024; // margin, gap and tile sizes are stored in pixels of a 1024 px sheet
   const LUT_N = 1024;
   const SIZES = [256, 512, 1024, 2048, 4096];
+  const GRIDS = [2, 4, 8, 16, 32, 64, 128, 256]; // snap grid in export pixels
   const LOOK_KEYS = ['shape', 'angle', 'mode', 'steps', 'tile', 'jitter', 'hardness', 'seamless'];
   const PNG_KEY = 'gradient-atlas';
 
@@ -49,8 +50,10 @@ const Atlas = (() => {
       name: 'Atlas',
       width: 1024,
       height: 1024,
-      margin: 37,
-      gap: 16,
+      margin: 0,
+      gap: 0,
+      snap: true,
+      grid: 32,
       gapFill: 'color', // color | bleed
       gapColor: '#D0C1B1',
       mix: 'oklab', // oklab | srgb
@@ -138,8 +141,10 @@ const Atlas = (() => {
     const nearestSize = v => SIZES.reduce((a, b) => (Math.abs(b - v) < Math.abs(a - v) ? b : a));
     p.width = nearestSize(num(src.width, 1024));
     p.height = nearestSize(num(src.height, 1024));
-    p.margin = num(src.margin, 37, 0, 256);
-    p.gap = num(src.gap, 16, 0, 256);
+    p.margin = num(src.margin, 0, 0, 256);
+    p.gap = num(src.gap, 0, 0, 256);
+    p.snap = src.snap !== false;
+    p.grid = GRIDS.includes(+src.grid) ? +src.grid : 32;
     p.gapFill = src.gapFill === 'bleed' ? 'bleed' : 'color';
     p.mix = src.mix === 'srgb' ? 'srgb' : 'oklab';
     p.dither = src.dither !== false;
@@ -460,7 +465,7 @@ const Atlas = (() => {
   }
 
   return {
-    REF, SIZES, LOOK_KEYS, uid, cell,
+    REF, SIZES, GRIDS, LOOK_KEYS, uid, cell,
     exampleProject, blankProject, randomProject, normalize,
     layout, render, cssGradient, embed, extract,
   };

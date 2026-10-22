@@ -284,6 +284,7 @@ input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offs
   background: var(--bg);
 }
 .field .seg { margin-bottom: 0; }
+.field select { width: 100%; }
 .seg button {
   display: inline-flex;
   flex: 1;
@@ -470,6 +471,21 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; user-select:
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 .toast.warn { background: var(--danger); color: #250b07; }
+.drag-tip {
+  position: fixed;
+  z-index: 40;
+  display: none;
+  padding: 4px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--raise);
+  color: var(--text);
+  font: 500 11.5px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+.drag-tip.show { display: block; }
 .drop {
   position: fixed;
   inset: 12px;

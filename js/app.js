@@ -222,6 +222,10 @@
     $('#sheet').innerHTML = `
       ${range({ label: 'Outer margin', bind: 'p:margin', min: 0, max: 128, value: p.margin, fmt: 'px' })}
       ${range({ label: 'Gap between cells', bind: 'p:gap', min: 0, max: 64, value: p.gap, fmt: 'px' })}
+      ${toggle('p:snap', p.snap, 'Snap to grid', 'Dragged edges stick to the grid; hold Ctrl to move freely')}
+      ${p.snap ? `<div class="field"><div class="field-top"><label>Grid size</label></div>
+        <select data-bind="p:grid" aria-label="Grid size">${Atlas.GRIDS.map(g =>
+          `<option value="${g}"${g === p.grid ? ' selected' : ''}>${g} px</option>`).join('')}</select></div>` : ''}
       <div class="field"><div class="field-top"><label>Gaps</label></div>
         ${seg('p:gapFill', p.gapFill, [['color', 'Colour'], ['bleed', 'Cell bleed']])}</div>
       ${p.gapFill === 'color'
@@ -496,8 +500,8 @@
   }
 
   function sheetSettings() {
-    const { width, height, margin, gap, gapFill, gapColor, mix, harmony } = project;
-    return { width, height, margin, gap, gapFill, gapColor, mix, harmony, shading: clone(project.shading) };
+    const { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony } = project;
+    return { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony, shading: clone(project.shading) };
   }
 
   const ACTIONS = {
@@ -826,7 +830,11 @@
     } else if (t.matches('input[type=color][data-bind]')) commit();
     else if (t.matches('input[type=checkbox][data-bind]')) {
       apply(t.dataset.bind, t.checked);
+      if (t.dataset.bind.startsWith('p:')) renderSheet();
       draw();
+      commit();
+    } else if (t.matches('select[data-bind]')) {
+      apply(t.dataset.bind, +t.value);
       commit();
     } else if (t.id === 'projName') {
       project.name = t.value.trim() || 'Atlas';
@@ -877,39 +885,84 @@
     $$('.menu.open').forEach(m => m.classList.remove('open'));
   }
 
-  // Dragging the gaps between cells and rows.
+  // Dragging the gaps between cells and rows. Positions are in export pixels, so the snap grid
+  // matches the texture; holding Ctrl moves freely.
   $('#overlay').addEventListener('pointerdown', e => {
     const gut = e.target.closest('.gut');
     if (!gut) return;
     e.preventDefault();
     const [kind, a, b] = gut.dataset.gut.split(':');
-    const L = lastLayout;
-    const k = view.clientWidth / view.width;
-    if (kind === 'c') {
-      const R = L.rows[+a];
-      const i = +b;
-      drag = { axis: 'x', list: R.row.cells, i, key: 'w', start: e.clientX, avail: R.availW * k, sum: R.sumW };
-    } else {
-      drag = { axis: 'y', list: project.rows, i: +a, key: 'h', start: e.clientY, avail: L.availH * k, sum: L.sumH };
-    }
-    drag.wa = drag.list[drag.i][drag.key];
-    drag.wb = drag.list[drag.i + 1][drag.key];
-    document.body.classList.add(drag.axis === 'x' ? 'dragging-x' : 'dragging-y');
+    const X = Atlas.layout(project, project.width, project.height);
+    const x = kind === 'c';
+    const i = x ? +b : +a;
+    const list = x ? project.rows[+a].cells : project.rows;
+    const key = x ? 'w' : 'h';
+    const avail = x ? X.rows[+a].availW : X.availH;
+    const sum = x ? X.rows[+a].sumW : X.sumH;
+    const before = list.slice(0, i).reduce((s, item) => s + item[key], 0);
+    const wa = list[i][key];
+    const wb = list[i + 1][key];
+    // lo and hi: where the gap centre sits when the first or the second cell has no size.
+    const lo = X.M + i * X.G + X.G / 2 + (before / sum) * avail;
+    drag = {
+      axis: x ? 'x' : 'y', ri: +a, list, i, key, avail, sum, wa, wb, lo,
+      hi: lo + ((wa + wb) / sum) * avail,
+      b0: lo + (wa / sum) * avail,
+      start: x ? e.clientX : e.clientY,
+      scale: x ? project.width / view.clientWidth : project.height / view.clientHeight,
+    };
+    document.body.classList.add(x ? 'dragging-x' : 'dragging-y');
+    showGrid(true);
   });
 
   window.addEventListener('pointermove', e => {
     if (!drag) return;
     const pos = drag.axis === 'x' ? e.clientX : e.clientY;
-    const min = drag.sum * 0.02;
-    const d = clamp(((pos - drag.start) / Math.max(1, drag.avail)) * drag.sum, min - drag.wa, drag.wb - min);
-    drag.list[drag.i][drag.key] = drag.wa + d;
-    drag.list[drag.i + 1][drag.key] = drag.wb - d;
+    let b = drag.b0 + (pos - drag.start) * drag.scale;
+    const minPx = Math.max(1, drag.avail * 0.02);
+    const lo = drag.lo + minPx;
+    const hi = drag.hi - minPx;
+    const grid = project.grid;
+    const first = Math.ceil(lo / grid) * grid;
+    const last = Math.floor(hi / grid) * grid;
+    if (project.snap && !e.ctrlKey && first <= last) b = clamp(Math.round(b / grid) * grid, first, last);
+    else b = clamp(b, lo, hi);
+    const wa = ((b - drag.lo) / drag.avail) * drag.sum;
+    drag.list[drag.i][drag.key] = wa;
+    drag.list[drag.i + 1][drag.key] = drag.wa + drag.wb - wa;
+    showDragTip(e);
     draw();
   });
 
-  window.addEventListener('pointerup', () => {
+  // Faint grid over the preview while dragging, when it is dense enough to read.
+  function showGrid(on) {
+    const ov = $('#overlay');
+    const step = project.grid * (view.clientWidth / project.width);
+    const show = on && project.snap && step >= 4;
+    ov.style.backgroundImage = show
+      ? 'linear-gradient(to right, rgba(255,255,255,.28) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,.28) 1px, transparent 1px)'
+      : '';
+    ov.style.backgroundSize = show ? `${step}px ${step}px` : '';
+  }
+
+  // Sizes of the two cells or rows next to the dragged gap, in export pixels.
+  function showDragTip(e) {
+    const X = Atlas.layout(project, project.width, project.height);
+    const sizes = drag.axis === 'x'
+      ? X.rows[drag.ri].cells.slice(drag.i, drag.i + 2).map(C => C.x1 - C.x0)
+      : X.rows.slice(drag.i, drag.i + 2).map(R => R.y1 - R.y0);
+    const tip = $('#dragTip');
+    tip.textContent = `${sizes[0]} px | ${sizes[1]} px`;
+    tip.style.left = e.clientX + 16 + 'px';
+    tip.style.top = e.clientY + 16 + 'px';
+    tip.classList.add('show');
+  }
+
+  function endDrag() {
     if (!drag) return;
     drag = null;
+    showGrid(false);
+    $('#dragTip').classList.remove('show');
     document.body.classList.remove('dragging-x', 'dragging-y');
     // The click that ends a drag must not select the cell under the pointer.
     const swallow = ev => ev.stopPropagation();
@@ -917,7 +970,9 @@
     setTimeout(() => window.removeEventListener('click', swallow, true), 0);
     renderInspector();
     commit();
-  });
+  }
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
 
   // Gradient stops: click the bar to add, drag to move, drag away to remove.
   $('#inspector').addEventListener('pointerdown', e => {
