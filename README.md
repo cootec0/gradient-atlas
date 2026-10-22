@@ -21,7 +21,7 @@ Open `index.html` in a browser. No install and no build step. Without internet t
   - direction: linear at any angle or radial,
   - blend: *Smooth* (with hardness), *Steps* (visible bands) or *Mosaic* (tiles with size and jitter),
   - *Seamless*: mirrors the gradient so the cell tiles without a seam.
-- **Sheet** – export size, outer margin, gaps and their colour. *Cell bleed* fills the gaps with the nearest cell colour, so texture filtering and mipmaps never pick up a border.
+- **Sheet** – export size, outer margin, gaps and their colour. *Cell bleed* fills the gaps with the nearest cell colour, so texture filtering and mipmaps never pick up a border. *Dither* (on by default) adds a half-step of noise to smooth blends, so 8-bit gradients show no bands; flat colours, steps and tiles stay exact.
 - **Export PNG** – the PNG carries the project inside it. Open it again (*Open PNG* or drop it on the page) to keep editing. The current project is also kept in the browser between visits.
 
 ## Shortcuts

@@ -54,6 +54,7 @@ const Atlas = (() => {
       gapFill: 'color', // color | bleed
       gapColor: '#D0C1B1',
       mix: 'oklab', // oklab | srgb
+      dither: true,
       harmony: 'earthy',
       shading: { hue: 10, light: 1, dark: 1 },
       palette,
@@ -141,6 +142,7 @@ const Atlas = (() => {
     p.gap = num(src.gap, 16, 0, 256);
     p.gapFill = src.gapFill === 'bleed' ? 'bleed' : 'color';
     p.mix = src.mix === 'srgb' ? 'srgb' : 'oklab';
+    p.dither = src.dither !== false;
     p.harmony = Color.HARMONIES[src.harmony] ? src.harmony : 'earthy';
     const sh = src.shading || {};
     p.shading = { hue: num(sh.hue, 10, 0, 90), light: num(sh.light, 1, 0, 2), dark: num(sh.dark, 1, 0, 2) };
@@ -230,9 +232,9 @@ const Atlas = (() => {
     return x + (x * x * (3 - 2 * x) - x) * k;
   }
 
-  // Colour along the cell's gradient axis (u = 0..1) as RGB bytes.
+  // Colour along the cell's gradient axis (u = 0..1) as unrounded 0-255 RGB, so rendering can dither.
   function cellLut(c, p, N = LUT_N) {
-    const lut = new Uint8ClampedArray(N * 3);
+    const lut = new Float32Array(N * 3);
     const pal = new Map(p.palette.map(x => [x.id, x.color]));
     const hexOf = id => pal.get(id) || p.palette[0].color;
     const put = (i, rgb) => {
@@ -282,7 +284,7 @@ const Atlas = (() => {
     const lut = cellLut(c, p, n);
     const parts = [];
     for (let i = 0; i < n; i++) {
-      parts.push(`rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]}) ${((i / (n - 1)) * 100).toFixed(1)}%`);
+      parts.push(`rgb(${Math.round(lut[i * 3])},${Math.round(lut[i * 3 + 1])},${Math.round(lut[i * 3 + 2])}) ${((i / (n - 1)) * 100).toFixed(1)}%`);
     }
     return `linear-gradient(90deg, ${parts.join(',')})`;
   }
@@ -297,6 +299,14 @@ const Atlas = (() => {
   }
 
   const pack = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
+  const byte = v => (v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0);
+
+  // Interleaved gradient noise in [0, 1): an even, pattern-free threshold per pixel.
+  function noise(x, y) {
+    const f = 0.06711056 * x + 0.00583715 * y;
+    const t = 52.9829189 * (f - Math.floor(f));
+    return t - Math.floor(t);
+  }
 
   // (x0, y0, cw, ch) is the cell; (ax0..ax1, ay0..ay1) the painted area, larger when gaps bleed.
   function drawCell(u32, W, c, p, s, x0, y0, cw, ch, ax0, ay0, ax1, ay1) {
@@ -304,7 +314,7 @@ const Atlas = (() => {
     const lut = cellLut(c, p);
     const last = LUT_N - 1;
     const px = new Uint32Array(LUT_N);
-    for (let i = 0; i < LUT_N; i++) px[i] = pack(lut[i * 3], lut[i * 3 + 1], lut[i * 3 + 2]);
+    for (let i = 0; i < LUT_N; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
     if (c.source === 'solid') {
       for (let y = ay0; y < ay1; y++) u32.fill(px[0], y * W + ax0, y * W + ax1);
       return;
@@ -327,6 +337,8 @@ const Atlas = (() => {
     }
     const jit = mosaic ? c.jitter * 0.5 : 0;
     const seed = c.seed | 0;
+    // Only smooth blends dither; flat bands and tiles keep exact colours.
+    const dither = p.dither && c.mode === 'smooth';
     for (let y = ay0; y < ay1; y++) {
       let fy = (y + 0.5 - y0) / ch;
       fy = fy < 0 ? 0 : fy > 0.999999 ? 0.999999 : fy;
@@ -359,7 +371,14 @@ const Atlas = (() => {
           u += (hash(ix, iy, seed) - 0.5) * jit;
           u = u < 0 ? 0 : u > 1 ? 1 : u;
         }
-        u32[rowStart + x] = px[(u * last + 0.5) | 0];
+        const i = (u * last + 0.5) | 0;
+        if (dither) {
+          const k = i * 3;
+          const d = noise(x, y) - 0.5;
+          u32[rowStart + x] = pack(byte(lut[k] + d), byte(lut[k + 1] + d), byte(lut[k + 2] + d));
+        } else {
+          u32[rowStart + x] = px[i];
+        }
       }
     }
   }

@@ -228,7 +228,8 @@
         ? colorField('Gap colour', 'p:gapColor', p.gapColor)
         : '<div class="hint" style="margin:-4px 0 14px">Gaps take the colour of the nearest cell, so texture filtering and mipmaps never pick up a border.</div>'}
       <div class="field"><div class="field-top"><label>Gradient mixing</label></div>
-        ${seg('p:mix', p.mix, [['oklab', 'OKLab', 'Perceptual: even, clean midtones'], ['srgb', 'sRGB', 'Classic: like CSS and most apps']])}</div>`;
+        ${seg('p:mix', p.mix, [['oklab', 'OKLab', 'Perceptual: even, clean midtones'], ['srgb', 'sRGB', 'Classic: like CSS and most apps']])}</div>
+      ${toggle('p:dither', p.dither, 'Dither', 'Hides 8-bit banding in smooth blends with a half-step of noise; flat colours stay exact')}`;
   }
 
   function renderInspector() {
@@ -370,10 +371,13 @@
   function draw() {
     if (drawQueued) return;
     drawQueued = true;
-    requestAnimationFrame(() => {
+    const run = () => {
+      if (!drawQueued) return;
       drawQueued = false;
       drawNow();
-    });
+    };
+    requestAnimationFrame(run);
+    setTimeout(run, 100); // background tabs may never run the animation frame
   }
 
   function drawNow() {
