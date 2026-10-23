@@ -43,3 +43,4 @@ Open `index.html` in a browser. No install and no build step. Without internet t
 - `js/color.js` – colour maths (OKLab, shades, palette styles)
 - `js/atlas.js` – layout, rendering and project data inside the PNG
 - `js/app.js` – editor interface
+- `examples/` – exported atlases; open one with *Open PNG* to edit it

@@ -27,12 +27,12 @@ const Atlas = (() => {
       dark: 1,
       shape: 'linear', // linear | radial
       angle: 0,
-      mode: 'smooth', // smooth | steps | mosaic
+      mode: 'mosaic', // smooth | steps | mosaic
       steps: 6,
-      tile: 24,
-      jitter: 0.3,
+      tile: 10,
+      jitter: 0,
       hardness: 0,
-      seamless: false,
+      seamless: true,
       seed: Math.floor(Math.random() * 1e6),
     }, over);
   }
@@ -69,8 +69,9 @@ const Atlas = (() => {
     const palette = ['#50954A', '#ABC35B', '#2A5341', '#5A5F34', '#6B4A37', '#E68237']
       .map(color => ({ id: uid('p'), color, locked: false }));
     const P = palette.map(p => p.id);
-    const g = (angle, ...st) => cell({ source: 'gradient', angle, stops: spread(st.map(([i, s]) => stop(P[i], s))) });
-    const sh = (i, angle, mode, light = 1, dark = 1) => cell({ source: 'shades', angle, mode, light, dark, stops: [stop(P[i])] });
+    const look = { mode: 'smooth', seamless: false };
+    const g = (angle, ...st) => cell(Object.assign({ source: 'gradient', angle, stops: spread(st.map(([i, s]) => stop(P[i], s))) }, look));
+    const sh = (i, angle, mode, light = 1, dark = 1) => cell(Object.assign({ source: 'shades', angle, light, dark, stops: [stop(P[i])] }, look, { mode }));
     return baseProject(palette, [
       row(137, P.map(id => cell({ stops: [stop(id)] }))),
       row(110, P.map((_, i) => sh(i, 0, 'steps'))),
@@ -183,15 +184,15 @@ const Atlas = (() => {
     out.w = num(c.w, 1, 0.001);
     out.source = ['solid', 'gradient', 'shades'].includes(c.source) ? c.source : 'solid';
     out.shape = c.shape === 'radial' ? 'radial' : 'linear';
-    out.mode = ['smooth', 'steps', 'mosaic'].includes(c.mode) ? c.mode : 'smooth';
+    out.mode = ['smooth', 'steps', 'mosaic'].includes(c.mode) ? c.mode : out.mode;
     out.angle = num(c.angle, 0, 0, 359);
     out.steps = Math.round(num(c.steps, 6, 2, 64));
-    out.tile = num(c.tile, 24, 1, 512);
-    out.jitter = num(c.jitter, 0.3, 0, 1);
+    out.tile = num(c.tile, out.tile, 1, 512);
+    out.jitter = num(c.jitter, out.jitter, 0, 1);
     out.hardness = num(c.hardness, 0, 0, 1);
     out.light = num(c.light, 1, 0, 2);
     out.dark = num(c.dark, 1, 0, 2);
-    out.seamless = !!c.seamless;
+    out.seamless = c.seamless === undefined ? out.seamless : !!c.seamless;
     out.seed = Math.round(num(c.seed, out.seed, 0, 1e9));
     const stops = Array.isArray(c.stops) && c.stops.length ? c.stops : [{}];
     out.stops = stops
