@@ -377,13 +377,14 @@ const Atlas = (() => {
     };
     const stops = c.stops.slice().sort((a, b) => a.p - b.p);
     const k = c.mode === 'smooth' ? c.hardness : 0;
-    // A shade ramp bends gently, so 129 exact shades joined by straight lines match it to well under
-    // one 8-bit step, at an eighth of the cost.
-    const ramp = shadeAt => {
-      const S = Math.min(N, 129);
+    // A shade ramp bends gently, so 257 exact shades joined by straight lines stay within about one
+    // 8-bit step of it at a quarter of the cost. `bend` (hardness) is applied after sampling, so a
+    // hard edge stays as sharp as the full ramp.
+    const ramp = (shadeAt, bend = v => v) => {
+      const S = Math.min(N, 257);
       const samples = Array.from({ length: S }, (_, j) => shadeAt(j / (S - 1)));
       for (let i = 0; i < N; i++) {
-        const v = (i / (N - 1)) * (S - 1);
+        const v = bend(i / (N - 1)) * (S - 1);
         const j = Math.min(S - 2, Math.floor(v));
         const w = v - j;
         const A = samples[j];
@@ -408,7 +409,7 @@ const Atlas = (() => {
     }
     if (c.source === 'shades') {
       const hex = hexOf(stops[0].c);
-      ramp(u => Color.shade(hex, c.light - hardness(u, k) * (c.light + c.dark), p.shading));
+      ramp(v => Color.shade(hex, c.light - v * (c.light + c.dark), p.shading), u => hardness(u, k));
       return lut;
     }
     const ok = p.mix === 'oklab';
@@ -454,19 +455,17 @@ const Atlas = (() => {
   const pack = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
   const byte = v => (v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0);
 
-  // Interleaved gradient noise in [0, 1): an even, pattern-free threshold per pixel.
-  function ditherAt(x, y) {
-    const f = 0.06711056 * x + 0.00583715 * y;
-    const t = 52.9829189 * (f - Math.floor(f));
-    return t - Math.floor(t);
-  }
-
-  // The threshold as one of DITHER_LEVELS steps, on a 64 x 64 tile: rendering looks a pixel's
-  // dithered colour up in a ready table instead of working it out.
-  const DITHER_LEVELS = 16;
+  // Thresholds for colouring, as one of DITHER_LEVELS steps on a 64 x 64 tile, so rendering looks a
+  // pixel's dithered colour up in a ready table. Each level appears equally often in a shuffled
+  // order, so the tile has no pattern and repeats without a seam.
+  const DITHER_LEVELS = 32;
   const DITHER = (() => {
     const t = new Uint8Array(64 * 64);
-    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) t[y * 64 + x] = Math.min(DITHER_LEVELS - 1, Math.floor(ditherAt(x, y) * DITHER_LEVELS));
+    for (let i = 0; i < t.length; i++) t[i] = i % DITHER_LEVELS;
+    for (let i = t.length - 1; i > 0; i--) {
+      const j = Math.floor(hash(i, 7, 11) * (i + 1));
+      [t[i], t[j]] = [t[j], t[i]];
+    }
     return t;
   })();
   const ditherOffset = level => (level + 0.5) / DITHER_LEVELS - 0.5;
@@ -591,11 +590,13 @@ const Atlas = (() => {
   }
 
   // (x0, y0, cw, ch) is the cell and (aw, ah) its painted area, larger when gaps bleed; both are in
-  // the area's own pixels, so a cell looks the same wherever it sits. Null for a flat colour.
-  function cellField(c, s, x0, y0, cw, ch, aw, ah, tinted) {
+  // the area's own pixels, so a cell looks the same wherever it sits. The field is filled a few rows
+  // at a time by step(until), which works until that time (and at least one row) and says whether
+  // the field is complete. A flat colour has no field.
+  function fieldJob(c, s, x0, y0, cw, ch, aw, ah, tinted) {
     const noisy = c.mode === 'noise';
     const solid = c.source === 'solid';
-    if (solid && !noisy) return null;
+    if (solid && !noisy) return { field: null, done: true, step: () => true };
     const uf = new Float32Array(aw * ah);
     const paint = tinted ? new Float32Array(aw * ah) : null;
     const radial = c.shape === 'radial';
@@ -628,7 +629,13 @@ const Atlas = (() => {
     }
     const jit = mosaic ? c.jitter * 0.5 : 0;
     const seed = c.seed | 0;
-    for (let y = 0; y < ah; y++) {
+    const job = { field: { u: uf, paint }, done: false, row: 0, rows: ah, step };
+    function step(until = Infinity) {
+      do rowAt(job.row++); while (job.row < ah && performance.now() < until);
+      job.done = job.row >= ah;
+      return job.done;
+    }
+    function rowAt(y) {
       let fy = (y + 0.5 - y0) / ch;
       fy = fy < 0 ? 0 : fy > 0.999999 ? 0.999999 : fy;
       let iy = 0;
@@ -671,8 +678,14 @@ const Atlas = (() => {
         uf[rowStart + x] = u;
       }
     }
-    return { u: uf, paint };
+    return job;
   }
+
+  const cellField = (...args) => {
+    const job = fieldJob(...args);
+    job.step();
+    return job.field;
+  };
 
   // Colours a field into `out` (aw x ah).
   function colorize(out, aw, ah, field, c, p, tint, lutN = LUT_N) {
@@ -746,47 +759,58 @@ const Atlas = (() => {
     const tint = tintOf(c, p);
     const fk = cache && `${s}|${cw},${ch},${x0},${y0},${aw},${ah}|${fieldKey(c, !!tint)}`;
     const pk = cache && `${fk}|${colourKey(c, p, tint)}`;
-    const hit = cache && cache.map.get(pk);
+    const hit = cache && !ctx.fieldsOnly && cache.map.get(pk);
+    let job = cache && cache.fields.get(fk);
+    if (job) job.gen = cache.gen; // in use, also when only its pixels are
     if (hit) {
       hit.gen = cache.gen;
       return hit.buf;
     }
-    const buf = new Uint32Array(aw * ah);
-    let entry = cache && cache.fields.get(fk);
-    if (!entry) {
-      const kind = ctx.budget ? costKind(c) : '';
-      const cost = kind ? (cache.rates.get(kind) || 0) * aw * ah : 0;
-      const t0 = performance.now();
-      if (cost > DRAFT_MS && t0 + cost > ctx.deadline && !(ctx.progress && !ctx.finished)) {
-        // Coarser the dearer the cell, so a draft costs about the same whatever it shows.
-        const f = Math.min(DRAFT_MAX, Math.max(2, Math.ceil(Math.sqrt(cost / DRAFT_MS))));
-        const dw = Math.ceil(aw / f);
-        const dh = Math.ceil(ah / f);
-        const small = new Uint32Array(dw * dh);
-        colorize(small, dw, dh, cellField(c, s / f, x0 / f, y0 / f, cw / f, ch / f, dw, dh, !!tint), c, p, tint, 128);
-        for (let y = 0; y < ah; y++) {
-          const at = y * aw;
-          if (y % f) {
-            buf.copyWithin(at, at - aw, at); // same as the row above
-            continue;
-          }
-          const from = (y / f) * dw;
-          for (let x = 0; x < aw; x++) buf[at + x] = small[from + ((x / f) | 0)];
-        }
-        cache.drafts++;
-        return buf;
-      }
-      entry = { field: cellField(c, s, x0, y0, cw, ch, aw, ah, !!tint), gen: 0 };
-      const ms = performance.now() - t0;
-      if (kind && ms > 0.5) { // a real paint teaches the cost of its kind
-        cache.rates.set(kind, ms / (aw * ah));
-        ctx.finished = true;
-      }
-      if (cache && entry.field) cache.fields.set(fk, entry);
+    if (!job) {
+      job = fieldJob(c, s, x0, y0, cw, ch, aw, ah, !!tint);
+      job.gen = cache ? cache.gen : 0;
+      if (cache && job.field) cache.fields.set(fk, job);
     }
-    entry.gen = cache ? cache.gen : 0;
-    colorize(buf, aw, ah, entry.field, c, p, tint);
-    if (cache) cache.map.set(pk, { buf, gen: cache.gen });
+    if (!job.done) {
+      if (!ctx.budget) job.step();
+      else {
+        // A refine pass gives every unfinished field a slice of work; a frame finishes only what
+        // fits, judging by what this kind of cell cost before.
+        const kind = costKind(c);
+        const t0 = performance.now();
+        const row0 = job.row;
+        const rate = cache.rates.get(kind);
+        const cost = (rate || 0) * (ah - row0) * aw;
+        if (rate !== undefined && (cost <= DRAFT_MS || t0 + cost <= ctx.deadline)) job.step();
+        else if (ctx.progress || t0 < ctx.deadline) job.step(ctx.deadline); // a slice, which also learns the cost
+        const ms = performance.now() - t0;
+        if (ms > 0.5) cache.rates.set(kind, ms / ((job.row - row0) * aw));
+      }
+    }
+    if (!job.done) cache.drafts++;
+    if (ctx.fieldsOnly) return null;
+    const buf = new Uint32Array(aw * ah);
+    if (!job.done) {
+      // Not ready: a coarse draft, coarser the dearer the cell, so each costs about the same.
+      const rate = cache.rates.get(costKind(c));
+      const f = rate === undefined ? DRAFT_MAX : Math.min(DRAFT_MAX, Math.max(2, Math.ceil(Math.sqrt((rate * aw * ah) / DRAFT_MS))));
+      const dw = Math.ceil(aw / f);
+      const dh = Math.ceil(ah / f);
+      const small = new Uint32Array(dw * dh);
+      colorize(small, dw, dh, cellField(c, s / f, x0 / f, y0 / f, cw / f, ch / f, dw, dh, !!tint), c, p, tint, 128);
+      for (let y = 0; y < ah; y++) {
+        const at = y * aw;
+        if (y % f) {
+          buf.copyWithin(at, at - aw, at); // same as the row above
+          continue;
+        }
+        const from = (y / f) * dw;
+        for (let x = 0; x < aw; x++) buf[at + x] = small[from + ((x / f) | 0)];
+      }
+      return buf;
+    }
+    colorize(buf, aw, ah, job.field, c, p, tint);
+    if (cache && ctx.store) cache.map.set(pk, { buf, gen: cache.gen });
     return buf;
   }
 
@@ -796,27 +820,30 @@ const Atlas = (() => {
     return { map: new Map(), fields: new Map(), gen: 0, drafts: 0, rates: new Map() };
   }
 
-  // Paints the atlas into `img`, yielding the share done after each cell.
+  const blank = (W, H, reuse) => (reuse && reuse.width === W && reuse.height === H ? reuse : new ImageData(W, H));
+
+  // Paints the atlas into `img`.
   // `cache` (from createCache) keeps cell pixels and fields between renders, so only what changed
-  // is redone. With `budget` (ms, needs a cache) cells that would not be ready in time are painted
-  // as drafts; render again to finish them. `progress` makes sure at least one of them finishes.
-  function* paint(p, W, H, img, cache, { budget = 0, progress = false } = {}) {
-    const u32 = new Uint32Array(img.data.buffer);
+  // is redone. With `budget` (ms, needs a cache) cells whose field is not ready in time are painted
+  // as drafts and `cache.drafts` counts them; render again to finish them. `progress` gives every
+  // unfinished field some work, `fieldsOnly` only works on fields and paints nothing, and `store`
+  // false keeps the pixels out of the cache.
+  function render(p, W, H, reuse, cache, { budget = 0, progress = false, fieldsOnly = false, store = true } = {}) {
+    const img = fieldsOnly ? null : blank(W, H, reuse);
+    const u32 = img && new Uint32Array(img.data.buffer);
     const bg = Color.hexToRgb(p.gapColor).map(v => Math.round(v * 255));
-    u32.fill(pack(bg[0], bg[1], bg[2]));
+    if (u32) u32.fill(pack(bg[0], bg[1], bg[2]));
     const L = layout(p, W, H);
     const bleed = p.gapFill === 'bleed';
     const before = Math.ceil(L.G / 2);
     const after = Math.floor(L.G / 2);
     const lastRow = L.rows.length - 1;
     if (!cache) budget = 0;
-    const ctx = { budget, progress, deadline: budget ? performance.now() + budget : Infinity, finished: false };
+    const ctx = { budget, progress, fieldsOnly, store, deadline: budget ? performance.now() + budget : Infinity };
     if (cache) {
       cache.gen++;
       cache.drafts = 0;
     }
-    const total = L.rows.reduce((a, R) => a + R.cells.length, 0);
-    let done = 0;
     for (const R of L.rows) {
       const ay0 = Math.max(0, !bleed ? R.y0 : R.ri === 0 ? 0 : R.y0 - before);
       const ay1 = Math.min(H, !bleed ? R.y1 : R.ri === lastRow ? H : R.y1 + after);
@@ -824,41 +851,38 @@ const Atlas = (() => {
       for (const C of R.cells) {
         const ax0 = Math.max(0, !bleed ? C.x0 : C.ci === 0 ? 0 : C.x0 - before);
         const ax1 = Math.min(W, !bleed ? C.x1 : C.ci === lastCell ? W : C.x1 + after);
-        if (ax1 > ax0 && ay1 > ay0 && C.x1 > C.x0 && R.y1 > R.y0) {
-          const buf = cellPixels(cache, ctx, C, R, p, L.s, ax0, ay0, ax1, ay1);
-          const aw = ax1 - ax0;
-          for (let y = ay0; y < ay1; y++) u32.set(buf.subarray((y - ay0) * aw, (y - ay0 + 1) * aw), y * W + ax0);
-        }
-        yield ++done / total;
+        if (ax1 <= ax0 || ay1 <= ay0 || C.x1 <= C.x0 || R.y1 <= R.y0) continue;
+        const buf = cellPixels(cache, ctx, C, R, p, L.s, ax0, ay0, ax1, ay1);
+        const aw = ax1 - ax0;
+        if (buf) for (let y = ay0; y < ay1; y++) u32.set(buf.subarray((y - ay0) * aw, (y - ay0 + 1) * aw), y * W + ax0);
       }
     }
     // What went unused for a few renders goes, so swapping back and forth while dragging stays cached.
     if (cache) {
       for (const m of [cache.map, cache.fields]) for (const [k, v] of m) if (cache.gen - v.gen > 4) m.delete(k);
     }
-  }
-
-  const blank = (W, H, reuse) => (reuse && reuse.width === W && reuse.height === H ? reuse : new ImageData(W, H));
-
-  function render(p, W, H, reuse, cache, opts) {
-    const img = blank(W, H, reuse);
-    const steps = paint(p, W, H, img, cache, opts);
-    while (!steps.next().done);
     return img;
   }
 
-  // The same as render, but gives the page a breath every few dozen milliseconds, for big exports.
+  // The same as render, but works out the fields in short slices with a breath for the page in
+  // between, so a big export does not freeze it. `onProgress` gets the share of fields done.
   async function renderAsync(p, W, H, onProgress) {
-    const img = blank(W, H);
-    let t = performance.now();
-    for (const share of paint(p, W, H, img, null)) {
-      if (performance.now() - t > 40) {
-        if (onProgress) onProgress(share);
-        await new Promise(r => setTimeout(r, 0));
-        t = performance.now();
+    const cache = createCache();
+    for (;;) {
+      render(p, W, H, null, cache, { budget: 40, progress: true, fieldsOnly: true });
+      if (!cache.drafts) break;
+      if (onProgress) {
+        let done = 0;
+        let total = 0;
+        for (const job of cache.fields.values()) {
+          done += Math.min(job.row, job.rows);
+          total += job.rows;
+        }
+        onProgress(total ? done / total : 1);
       }
+      await new Promise(r => setTimeout(r, 0));
     }
-    return img;
+    return render(p, W, H, null, cache, { store: false });
   }
 
   // ---------- Project data inside the PNG (tEXt chunk) ----------

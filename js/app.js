@@ -506,9 +506,7 @@
     cw = Math.floor(cw);
     ch = Math.floor(ch);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    // Never more pixels than the texture itself has (or than the screen shows, when that is more):
-    // past that a sharper preview only costs time.
-    const k = Math.min(1, 2048 / Math.max(cw * dpr, ch * dpr), Math.max(1 / dpr, project.width / (cw * dpr)));
+    const k = Math.min(1, 2048 / Math.max(cw * dpr, ch * dpr));
     const pw = Math.max(1, Math.round(cw * dpr * k));
     const ph = Math.max(1, Math.round(ch * dpr * k));
     if (view.width !== pw || view.height !== ph) {
@@ -803,6 +801,7 @@
       const c = cloneCell(f.cell);
       f.row.cells.splice(f.ci + 1, 0, c);
       sel = c.id;
+      picked.clear(); // acts on the main cell only, so the rest of a selection would mislead
       done();
     },
     'cell-add'() {
@@ -812,6 +811,7 @@
       c.stops.forEach(st => { st.c = nextPalId(st.c); });
       f.row.cells.splice(f.ci + 1, 0, c);
       sel = c.id;
+      picked.clear();
       done();
     },
     'cell-del'() {
@@ -840,6 +840,7 @@
       const cells = Array.from({ length: n }, (_, i) => Atlas.cell({ stops: [{ c: P[i % P.length].id, s: 0, p: 0 }] }));
       project.rows.splice(at, 0, { id: Atlas.uid('r'), h: ref ? ref.h : 120, cells });
       sel = cells[0].id;
+      picked.clear();
       done();
     },
     'row-add-end'() {
@@ -852,6 +853,7 @@
       const r = { id: Atlas.uid('r'), h: f.row.h, cells: f.row.cells.map(cloneCell) };
       project.rows.splice(f.ri + 1, 0, r);
       sel = r.cells[f.ci].id;
+      picked.clear();
       done();
     },
     'row-up'() {
@@ -890,6 +892,7 @@
       const c = Object.assign(clone(clip), { id: f.cell.id, w: f.cell.w });
       c.stops.forEach(st => { if (!ids.has(st.c)) st.c = project.palette[0].id; });
       f.row.cells[f.ci] = c;
+      picked.clear();
       done();
     },
     'look-row'() {
@@ -1162,6 +1165,9 @@
   // Dragging the gaps between cells and rows. Positions are in export pixels, so the snap grid
   // matches the texture; holding Ctrl moves freely.
   $('#overlay').addEventListener('pointerdown', e => {
+    // preventDefault below also keeps focus where it was; a slider or field still focused would
+    // take the arrow and Delete keys meant for the cells.
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     const gut = e.target.closest('.gut');
     if (!gut) {
       startCellDrag(e);
