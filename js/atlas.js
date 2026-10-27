@@ -377,14 +377,29 @@ const Atlas = (() => {
     };
     const stops = c.stops.slice().sort((a, b) => a.p - b.p);
     const k = c.mode === 'smooth' ? c.hardness : 0;
+    // A shade ramp bends gently, so 257 exact shades joined by straight lines stay within about one
+    // 8-bit step of it at a quarter of the cost. `bend` (hardness) is applied after sampling, so a
+    // hard edge stays as sharp as the full ramp.
+    const ramp = (shadeAt, bend = v => v) => {
+      const S = Math.min(N, 257);
+      const samples = Array.from({ length: S }, (_, j) => shadeAt(j / (S - 1)));
+      for (let i = 0; i < N; i++) {
+        const v = bend(i / (N - 1)) * (S - 1);
+        const j = Math.min(S - 2, Math.floor(v));
+        const w = v - j;
+        const A = samples[j];
+        const B = samples[j + 1];
+        put(i, [A[0] + (B[0] - A[0]) * w, A[1] + (B[1] - A[1]) * w, A[2] + (B[2] - A[2]) * w]);
+      }
+    };
 
     if (c.source === 'solid' && c.mode === 'noise') {
       // A noisy solid: shades around its own shade, lighter at u = 0 and darker at u = 1.
       const hex = hexOf(stops[0].c);
-      for (let i = 0; i < N; i++) {
-        const t = stops[0].s + c.spread * (1 - (2 * i) / (N - 1));
-        put(i, Color.shade(hex, t < -1 ? -1 : t > 1 ? 1 : t, p.shading));
-      }
+      ramp(u => {
+        const t = stops[0].s + c.spread * (1 - 2 * u);
+        return Color.shade(hex, t < -1 ? -1 : t > 1 ? 1 : t, p.shading);
+      });
       return lut;
     }
     if (c.source === 'solid' || (c.source === 'gradient' && stops.length < 2)) {
@@ -394,10 +409,7 @@ const Atlas = (() => {
     }
     if (c.source === 'shades') {
       const hex = hexOf(stops[0].c);
-      for (let i = 0; i < N; i++) {
-        const u = hardness(i / (N - 1), k);
-        put(i, Color.shade(hex, c.light - u * (c.light + c.dark), p.shading));
-      }
+      ramp(v => Color.shade(hex, c.light - v * (c.light + c.dark), p.shading), u => hardness(u, k));
       return lut;
     }
     const ok = p.mix === 'oklab';
@@ -443,12 +455,20 @@ const Atlas = (() => {
   const pack = (r, g, b) => ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
   const byte = v => (v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0);
 
-  // Interleaved gradient noise in [0, 1): an even, pattern-free threshold per pixel.
-  function ditherAt(x, y) {
-    const f = 0.06711056 * x + 0.00583715 * y;
-    const t = 52.9829189 * (f - Math.floor(f));
-    return t - Math.floor(t);
-  }
+  // Thresholds for colouring, as one of DITHER_LEVELS steps on a 64 x 64 tile, so rendering looks a
+  // pixel's dithered colour up in a ready table. Each level appears equally often in a shuffled
+  // order, so the tile has no pattern and repeats without a seam.
+  const DITHER_LEVELS = 32;
+  const DITHER = (() => {
+    const t = new Uint8Array(64 * 64);
+    for (let i = 0; i < t.length; i++) t[i] = i % DITHER_LEVELS;
+    for (let i = t.length - 1; i > 0; i--) {
+      const j = Math.floor(hash(i, 7, 11) * (i + 1));
+      [t[i], t[j]] = [t[j], t[i]];
+    }
+    return t;
+  })();
+  const ditherOffset = level => (level + 0.5) / DITHER_LEVELS - 0.5;
 
   // ---------- Texture noise ----------
   // Coordinates are in noise features; px and py are wrap periods in features (0 = no wrap), so a
@@ -558,19 +578,27 @@ const Atlas = (() => {
     return n < 0 ? 0 : n > 1 ? 1 : n;
   }
 
-  // (x0, y0, cw, ch) is the cell; (ax0..ax1, ay0..ay1) the painted area, larger when gaps bleed.
-  function drawCell(u32, W, c, p, s, x0, y0, cw, ch, ax0, ay0, ax1, ay1) {
-    if (cw <= 0 || ch <= 0 || ax1 <= ax0 || ay1 <= ay0) return;
-    const lut = cellLut(c, p);
-    const last = LUT_N - 1;
-    const px = new Uint32Array(LUT_N);
-    for (let i = 0; i < LUT_N; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
+  // A cell is painted in two steps. Its field says where each pixel falls on the cell's colour ramp
+  // (u, 0..1) and how much of the noise colour it takes (paint); it depends on shape, blend and noise
+  // but not on colours. Colouring then looks each pixel up in the ramp. Changing a colour or the
+  // shading only repeats the cheap second step.
+
+  // The noise colour of a cell as RGB 0-255, or null when it has none.
+  function tintOf(c, p) {
+    const entry = c.mode === 'noise' && c.noiseColor ? p.palette.find(q => q.id === c.noiseColor) : null;
+    return entry ? Color.shade(entry.color, c.noiseShade, p.shading).map(v => v * 255) : null;
+  }
+
+  // (x0, y0, cw, ch) is the cell and (aw, ah) its painted area, larger when gaps bleed; both are in
+  // the area's own pixels, so a cell looks the same wherever it sits. The field is filled a few rows
+  // at a time by step(until), which works until that time (and at least one row) and says whether
+  // the field is complete. A flat colour has no field.
+  function fieldJob(c, s, x0, y0, cw, ch, aw, ah, tinted) {
     const noisy = c.mode === 'noise';
     const solid = c.source === 'solid';
-    if (solid && !noisy) {
-      for (let y = ay0; y < ay1; y++) u32.fill(px[0], y * W + ax0, y * W + ax1);
-      return;
-    }
+    if (solid && !noisy) return { field: null, done: true, step: () => true };
+    const uf = new Float32Array(aw * ah);
+    const paint = tinted ? new Float32Array(aw * ah) : null;
     const radial = c.shape === 'radial';
     // In noise mode seamless wraps the noise; the gradient keeps its direction.
     const seam = c.seamless && !radial && !noisy;
@@ -584,9 +612,7 @@ const Atlas = (() => {
     const wx = noisy && c.seamless ? nx : 0;
     const wy = noisy && c.seamless ? ny : 0;
     // A noise colour is painted over the cell's colours; without one the noise moves along them.
-    const tintEntry = noisy && c.noiseColor ? p.palette.find(q => q.id === c.noiseColor) : null;
-    const tint = tintEntry ? Color.shade(tintEntry.color, c.noiseShade, p.shading).map(v => v * 255) : null;
-    const mix = solid && !tint ? 1 : c.noiseMix;
+    const mix = solid && !tinted ? 1 : c.noiseMix;
     const mosaic = c.mode === 'mosaic';
     const steps = c.mode === 'steps';
     const n = Math.max(2, c.steps | 0);
@@ -603,9 +629,13 @@ const Atlas = (() => {
     }
     const jit = mosaic ? c.jitter * 0.5 : 0;
     const seed = c.seed | 0;
-    // Only smooth blends and noise dither; flat bands and tiles keep exact colours.
-    const dither = p.dither && (c.mode === 'smooth' || noisy);
-    for (let y = ay0; y < ay1; y++) {
+    const job = { field: { u: uf, paint }, done: false, row: 0, rows: ah, step };
+    function step(until = Infinity) {
+      do rowAt(job.row++); while (job.row < ah && performance.now() < until);
+      job.done = job.row >= ah;
+      return job.done;
+    }
+    function rowAt(y) {
       let fy = (y + 0.5 - y0) / ch;
       fy = fy < 0 ? 0 : fy > 0.999999 ? 0.999999 : fy;
       let iy = 0;
@@ -613,8 +643,8 @@ const Atlas = (() => {
         iy = Math.floor(fy * ty);
         fy = (iy + 0.5) / ty;
       }
-      const rowStart = y * W;
-      for (let x = ax0; x < ax1; x++) {
+      const rowStart = y * aw;
+      for (let x = 0; x < aw; x++) {
         let fx = (x + 0.5 - x0) / cw;
         fx = fx < 0 ? 0 : fx > 0.999999 ? 0.999999 : fx;
         let ix = 0;
@@ -637,56 +667,229 @@ const Atlas = (() => {
           u += (hash(ix, iy, seed) - 0.5) * jit;
           u = u < 0 ? 0 : u > 1 ? 1 : u;
         }
-        let paint = 0;
         if (noisy) {
           const nv = textureNoise(c, fx * nx, fy * ny, wx, wy);
-          if (!tint) u += (nv - u) * mix;
+          if (!tinted) u += (nv - u) * mix;
           else {
-            paint = nv * mix;
+            paint[rowStart + x] = nv * mix;
             if (solid) u = 0.5; // the solid's own shade sits in the middle of its ramp
           }
         }
-        const i = (u * last + 0.5) | 0;
-        if (tint) {
-          const k = i * 3;
-          const d = dither ? ditherAt(x, y) - 0.5 : 0;
-          u32[rowStart + x] = pack(
-            byte(lut[k] + (tint[0] - lut[k]) * paint + d),
-            byte(lut[k + 1] + (tint[1] - lut[k + 1]) * paint + d),
-            byte(lut[k + 2] + (tint[2] - lut[k + 2]) * paint + d),
+        uf[rowStart + x] = u;
+      }
+    }
+    return job;
+  }
+
+  const cellField = (...args) => {
+    const job = fieldJob(...args);
+    job.step();
+    return job.field;
+  };
+
+  // Colours a field into `out` (aw x ah).
+  function colorize(out, aw, ah, field, c, p, tint, lutN = LUT_N) {
+    const lut = cellLut(c, p, lutN);
+    const last = lutN - 1;
+    const px = new Uint32Array(lutN);
+    for (let i = 0; i < lutN; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
+    if (!field) {
+      out.fill(px[0]);
+      return;
+    }
+    const { u, paint } = field;
+    // Only smooth blends and noise dither; flat bands and tiles keep exact colours.
+    const dither = p.dither && (c.mode === 'smooth' || c.mode === 'noise');
+    if (tint) {
+      for (let y = 0; y < ah; y++) {
+        const rowStart = y * aw;
+        const drow = (y & 63) * 64;
+        for (let x = 0; x < aw; x++) {
+          const j = rowStart + x;
+          const k = ((u[j] * last + 0.5) | 0) * 3;
+          const t = paint[j];
+          const d = dither ? ditherOffset(DITHER[drow + (x & 63)]) : 0;
+          out[j] = pack(
+            byte(lut[k] + (tint[0] - lut[k]) * t + d),
+            byte(lut[k + 1] + (tint[1] - lut[k + 1]) * t + d),
+            byte(lut[k + 2] + (tint[2] - lut[k + 2]) * t + d),
           );
-        } else if (dither) {
-          const k = i * 3;
-          const d = ditherAt(x, y) - 0.5;
-          u32[rowStart + x] = pack(byte(lut[k] + d), byte(lut[k + 1] + d), byte(lut[k + 2] + d));
-        } else {
-          u32[rowStart + x] = px[i];
         }
       }
+    } else if (dither) {
+      // One ramp per dither level, side by side.
+      const dpx = new Uint32Array(lutN * DITHER_LEVELS);
+      for (let level = 0; level < DITHER_LEVELS; level++) {
+        const d = ditherOffset(level);
+        for (let i = 0; i < lutN; i++) dpx[level * lutN + i] = pack(byte(lut[i * 3] + d), byte(lut[i * 3 + 1] + d), byte(lut[i * 3 + 2] + d));
+      }
+      for (let y = 0; y < ah; y++) {
+        const rowStart = y * aw;
+        const drow = (y & 63) * 64;
+        for (let x = 0; x < aw; x++) out[rowStart + x] = dpx[DITHER[drow + (x & 63)] * lutN + ((u[rowStart + x] * last + 0.5) | 0)];
+      }
+    } else {
+      for (let j = 0; j < aw * ah; j++) out[j] = px[(u[j] * last + 0.5) | 0];
     }
   }
 
-  function render(p, W, H, reuse) {
-    const img = reuse && reuse.width === W && reuse.height === H ? reuse : new ImageData(W, H);
-    const u32 = new Uint32Array(img.data.buffer);
+  // What a cell's field depends on, and on top of that what its colours depend on. Colours are
+  // keyed by value, so editing a palette entry a cell does not use keeps it cached.
+  const COLOUR_KEYS = new Set(['id', 'w', 'noiseMemory', 'stops', 'light', 'dark', 'spread', 'hardness', 'noiseShade', 'noiseColor']);
+  const fieldKey = (c, tint) => JSON.stringify(c, (k, v) => (COLOUR_KEYS.has(k) ? undefined : v)) + (tint ? '+tint' : '');
+  function colourKey(c, p, tint) {
+    const hex = id => (p.palette.find(q => q.id === id) || p.palette[0]).color;
+    return JSON.stringify([c.stops.map(st => [hex(st.c), st.s, st.p]), c.light, c.dark, c.spread, c.hardness, tint, p.shading, p.mix, p.dither]);
+  }
+
+  const DRAFT_MS = 1; // about what one draft cell may cost
+  const DRAFT_MAX = 12; // the coarsest draft, in pixels per draft pixel
+  const costKind = c => (c.mode === 'noise' ? 'noise/' + c.noise + '/' + c.noiseDetail : c.source === 'solid' ? 'flat' : c.mode);
+
+  // Pixels of one cell's painted area, from the cache when nothing about it changed. When its field
+  // is missing and `ctx` says the frame is out of time it paints a coarse draft, never cached.
+  function cellPixels(cache, ctx, C, R, p, s, ax0, ay0, ax1, ay1) {
+    const c = C.cell;
+    const aw = ax1 - ax0;
+    const ah = ay1 - ay0;
+    const x0 = C.x0 - ax0;
+    const y0 = R.y0 - ay0;
+    const cw = C.x1 - C.x0;
+    const ch = R.y1 - R.y0;
+    const tint = tintOf(c, p);
+    const fk = cache && `${s}|${cw},${ch},${x0},${y0},${aw},${ah}|${fieldKey(c, !!tint)}`;
+    const pk = cache && `${fk}|${colourKey(c, p, tint)}`;
+    const hit = cache && !ctx.fieldsOnly && cache.map.get(pk);
+    let job = cache && cache.fields.get(fk);
+    if (job) job.gen = cache.gen; // in use, also when only its pixels are
+    if (hit) {
+      hit.gen = cache.gen;
+      return hit.buf;
+    }
+    if (!job) {
+      job = fieldJob(c, s, x0, y0, cw, ch, aw, ah, !!tint);
+      job.gen = cache ? cache.gen : 0;
+      if (cache && job.field) cache.fields.set(fk, job);
+    }
+    if (!job.done) {
+      if (!ctx.budget) job.step();
+      else {
+        // A refine pass gives every unfinished field a slice of work; a frame finishes only what
+        // fits, judging by what this kind of cell cost before.
+        const kind = costKind(c);
+        const t0 = performance.now();
+        const row0 = job.row;
+        const rate = cache.rates.get(kind);
+        const cost = (rate || 0) * (ah - row0) * aw;
+        if (rate !== undefined && (cost <= DRAFT_MS || t0 + cost <= ctx.deadline)) job.step();
+        else if (ctx.progress || t0 < ctx.deadline) job.step(ctx.deadline); // a slice, which also learns the cost
+        const ms = performance.now() - t0;
+        if (ms > 0.5) cache.rates.set(kind, ms / ((job.row - row0) * aw));
+      }
+    }
+    if (!job.done) cache.drafts++;
+    if (ctx.fieldsOnly) return null;
+    if (!job.done && cache && job.draftKey === pk) return job.draftBuf; // the draft from last time
+    const buf = new Uint32Array(aw * ah);
+    if (!job.done) {
+      // Not ready: a coarse draft, coarser the dearer the cell, so each costs about the same. It is
+      // kept with the unfinished field until that is done.
+      const rate = cache.rates.get(costKind(c));
+      const f = rate === undefined ? DRAFT_MAX : Math.min(DRAFT_MAX, Math.max(2, Math.ceil(Math.sqrt((rate * aw * ah) / DRAFT_MS))));
+      const dw = Math.ceil(aw / f);
+      const dh = Math.ceil(ah / f);
+      const small = new Uint32Array(dw * dh);
+      colorize(small, dw, dh, cellField(c, s / f, x0 / f, y0 / f, cw / f, ch / f, dw, dh, !!tint), c, p, tint, 128);
+      for (let y = 0; y < ah; y++) {
+        const at = y * aw;
+        if (y % f) {
+          buf.copyWithin(at, at - aw, at); // same as the row above
+          continue;
+        }
+        const from = (y / f) * dw;
+        for (let x = 0; x < aw; x++) buf[at + x] = small[from + ((x / f) | 0)];
+      }
+      if (cache) {
+        job.draftKey = pk;
+        job.draftBuf = buf;
+      }
+      return buf;
+    }
+    job.draftBuf = null;
+    colorize(buf, aw, ah, job.field, c, p, tint);
+    if (cache && ctx.store) cache.map.set(pk, { buf, gen: cache.gen });
+    return buf;
+  }
+
+  // `drafts` counts the cells of the last render that were painted as drafts; `rates` holds the
+  // measured cost of a pixel per kind of cell, to tell whether the next one fits in the time left.
+  function createCache() {
+    return { map: new Map(), fields: new Map(), gen: 0, drafts: 0, rates: new Map() };
+  }
+
+  const blank = (W, H, reuse) => (reuse && reuse.width === W && reuse.height === H ? reuse : new ImageData(W, H));
+
+  // Paints the atlas into `img`.
+  // `cache` (from createCache) keeps cell pixels and fields between renders, so only what changed
+  // is redone. With `budget` (ms, needs a cache) cells whose field is not ready in time are painted
+  // as drafts and `cache.drafts` counts them; render again to finish them. `progress` gives every
+  // unfinished field some work, `fieldsOnly` only works on fields and paints nothing, and `store`
+  // false keeps the pixels out of the cache.
+  function render(p, W, H, reuse, cache, { budget = 0, progress = false, fieldsOnly = false, store = true } = {}) {
+    const img = fieldsOnly ? null : blank(W, H, reuse);
+    const u32 = img && new Uint32Array(img.data.buffer);
     const bg = Color.hexToRgb(p.gapColor).map(v => Math.round(v * 255));
-    u32.fill(pack(bg[0], bg[1], bg[2]));
+    if (u32) u32.fill(pack(bg[0], bg[1], bg[2]));
     const L = layout(p, W, H);
     const bleed = p.gapFill === 'bleed';
     const before = Math.ceil(L.G / 2);
     const after = Math.floor(L.G / 2);
     const lastRow = L.rows.length - 1;
+    if (!cache) budget = 0;
+    const ctx = { budget, progress, fieldsOnly, store, deadline: budget ? performance.now() + budget : Infinity };
+    if (cache) {
+      cache.gen++;
+      cache.drafts = 0;
+    }
     for (const R of L.rows) {
-      const ay0 = !bleed ? R.y0 : R.ri === 0 ? 0 : R.y0 - before;
-      const ay1 = !bleed ? R.y1 : R.ri === lastRow ? H : R.y1 + after;
+      const ay0 = Math.max(0, !bleed ? R.y0 : R.ri === 0 ? 0 : R.y0 - before);
+      const ay1 = Math.min(H, !bleed ? R.y1 : R.ri === lastRow ? H : R.y1 + after);
       const lastCell = R.cells.length - 1;
       for (const C of R.cells) {
-        const ax0 = !bleed ? C.x0 : C.ci === 0 ? 0 : C.x0 - before;
-        const ax1 = !bleed ? C.x1 : C.ci === lastCell ? W : C.x1 + after;
-        drawCell(u32, W, C.cell, p, L.s, C.x0, R.y0, C.x1 - C.x0, R.y1 - R.y0, ax0, ay0, ax1, ay1);
+        const ax0 = Math.max(0, !bleed ? C.x0 : C.ci === 0 ? 0 : C.x0 - before);
+        const ax1 = Math.min(W, !bleed ? C.x1 : C.ci === lastCell ? W : C.x1 + after);
+        if (ax1 <= ax0 || ay1 <= ay0 || C.x1 <= C.x0 || R.y1 <= R.y0) continue;
+        const buf = cellPixels(cache, ctx, C, R, p, L.s, ax0, ay0, ax1, ay1);
+        const aw = ax1 - ax0;
+        if (buf) for (let y = ay0; y < ay1; y++) u32.set(buf.subarray((y - ay0) * aw, (y - ay0 + 1) * aw), y * W + ax0);
       }
     }
+    // What went unused for a few renders goes, so swapping back and forth while dragging stays cached.
+    if (cache) {
+      for (const m of [cache.map, cache.fields]) for (const [k, v] of m) if (cache.gen - v.gen > 4) m.delete(k);
+    }
     return img;
+  }
+
+  // The same as render, but works out the fields in short slices with a breath for the page in
+  // between, so a big export does not freeze it. `onProgress` gets the share of fields done.
+  async function renderAsync(p, W, H, onProgress) {
+    const cache = createCache();
+    for (;;) {
+      render(p, W, H, null, cache, { budget: 40, progress: true, fieldsOnly: true });
+      if (!cache.drafts) break;
+      if (onProgress) {
+        let done = 0;
+        let total = 0;
+        for (const job of cache.fields.values()) {
+          done += Math.min(job.row, job.rows);
+          total += job.rows;
+        }
+        onProgress(total ? done / total : 1);
+      }
+      await new Promise(r => setTimeout(r, 0));
+    }
+    return render(p, W, H, null, cache, { store: false });
   }
 
   // ---------- Project data inside the PNG (tEXt chunk) ----------
@@ -745,6 +948,6 @@ const Atlas = (() => {
   return {
     REF, SIZES, GRIDS, LOOK_KEYS, LAYOUTS, NOISES, NOISE_KEYS, NOISE_START, uid, cell,
     exampleProject, blankProject, randomProject, materialProject, layoutRows, normalize,
-    layout, render, cssGradient, embed, extract,
+    layout, render, renderAsync, createCache, cssGradient, embed, extract,
   };
 })();

@@ -15,6 +15,8 @@
   let clip = null; // copied cell
   let lastLayout = null; // layout of the preview canvas, in canvas pixels
   let previewImage = null;
+  const previewCache = Atlas.createCache(); // cell pixels of the preview, reused while they stay the same
+  let overlayKey = ''; // layout the overlay was built for
   let drawQueued = false;
   let drag = null;
   const hist = { stack: [], i: -1 };
@@ -119,6 +121,7 @@
   function load(p) {
     project = Atlas.normalize(p);
     sel = null;
+    picked.clear();
     selStop = 0;
     renderAll();
     commit();
@@ -427,7 +430,10 @@
     return `
       <div class="insp-head">
         <div><div class="eyebrow">Selection</div><div class="insp-title">${list.length} cells</div></div>
-        <div class="tools"><button class="icon-btn" data-act="sel-clear" title="Clear selection (Esc)">${icon('x')}</button></div>
+        <div class="tools">
+          <button class="icon-btn danger" data-act="cell-del" title="Delete these cells (Del)">${icon('trash')}</button>
+          <button class="icon-btn" data-act="sel-clear" title="Clear selection (Esc)">${icon('x')}</button>
+        </div>
       </div>
       <section class="group">
         <div class="group-title">Even out</div>
@@ -438,7 +444,7 @@
         <div class="hint">Same width: picked cells that share a row split their space evenly. Same height: the rows they sit in get one height.</div>
       </section>
       <section class="group">
-        <div class="hint" style="margin:0">Shift+click adds or removes cells. Click one cell to edit it.</div>
+        <div class="hint" style="margin:0">Shift+click or Ctrl+click adds or removes cells. Click one cell to edit just that one.</div>
       </section>`;
   }
 
@@ -466,6 +472,12 @@
 
   // ---------- Preview ----------
 
+  // Heavy cells that do not fit in a frame show as drafts first and are finished in short slices
+  // once input pauses, so dragging a slider over a noisy atlas stays smooth.
+  const FRAME_BUDGET = 20;
+  const REFINE_BUDGET = 20;
+  let refineTimer = 0;
+
   function draw() {
     if (drawQueued) return;
     drawQueued = true;
@@ -478,7 +490,8 @@
     setTimeout(run, 100); // background tabs may never run the animation frame
   }
 
-  function drawNow() {
+  function drawNow(refining = false) {
+    clearTimeout(refineTimer);
     const stage = $('#stageInner');
     const pad = 32;
     const availW = Math.max(80, stage.clientWidth - pad * 2);
@@ -502,8 +515,9 @@
     }
     view.style.width = cw + 'px';
     view.style.height = ch + 'px';
-    previewImage = Atlas.render(project, pw, ph, previewImage);
+    previewImage = Atlas.render(project, pw, ph, previewImage, previewCache, { budget: refining ? REFINE_BUDGET : FRAME_BUDGET, progress: refining });
     viewCtx.putImageData(previewImage, 0, 0);
+    if (previewCache.drafts) refineTimer = setTimeout(() => drawNow(true), refining ? 0 : 120);
     lastLayout = Atlas.layout(project, pw, ph);
     buildOverlay(cw / pw);
     drawTilePreview();
@@ -513,6 +527,14 @@
 
   function buildOverlay(k) {
     const L = lastLayout;
+    // Rebuilding the overlay on every frame of a drag costs time and drops hover states.
+    const key = k + '|' + L.rows.map(R => `${R.y0},${R.y1}:` + R.cells.map(C => `${C.cell.id},${C.x0},${C.x1}`).join(';')).join('/');
+    if (key === overlayKey && $('#overlay').childElementCount) {
+      markSelection();
+      if (cellDrag) markCellDrag();
+      return;
+    }
+    overlayKey = key;
     let h = '';
     for (const R of L.rows) {
       for (const C of R.cells) {
@@ -561,6 +583,7 @@
   // ---------- Selection ----------
 
   function select(id) {
+    if (id && id === sel && !picked.size) return; // already the only one: keep the picked stop
     sel = id;
     selStop = 0;
     picked.clear();
@@ -657,6 +680,22 @@
     project.palette = next;
   }
 
+  // Deletes every picked cell; rows left empty go too. The atlas keeps at least one cell.
+  function deleteSelection() {
+    const gone = new Set(selection().map(f => f.cell.id));
+    if (gone.size >= allCells().length) return toast('The atlas needs at least one cell', true);
+    const f = current();
+    const at = { ri: f.ri, ci: f.ci };
+    project.rows = project.rows
+      .map(r => Object.assign(r, { cells: r.cells.filter(c => !gone.has(c.id)) }))
+      .filter(r => r.cells.length);
+    const row = project.rows[Math.min(at.ri, project.rows.length - 1)];
+    sel = row.cells[Math.min(at.ci, row.cells.length - 1)].id;
+    picked.clear();
+    done();
+    toast(`${gone.size} cells deleted · Ctrl+Z to undo`);
+  }
+
   const ACTIONS = {
     undo: () => travel(-1),
     redo: () => travel(1),
@@ -739,6 +778,7 @@
     'layout-gen'() {
       project.rows = Atlas.layoutRows(project.layout, project.palette);
       sel = null;
+      picked.clear();
       done();
       toast(`${Atlas.LAYOUTS[project.layout]} layout · Ctrl+Z to undo`);
     },
@@ -761,6 +801,7 @@
       const c = cloneCell(f.cell);
       f.row.cells.splice(f.ci + 1, 0, c);
       sel = c.id;
+      picked.clear(); // acts on the main cell only, so the rest of a selection would mislead
       done();
     },
     'cell-add'() {
@@ -770,11 +811,13 @@
       c.stops.forEach(st => { st.c = nextPalId(st.c); });
       f.row.cells.splice(f.ci + 1, 0, c);
       sel = c.id;
+      picked.clear();
       done();
     },
     'cell-del'() {
       const f = current();
       if (!f) return;
+      if (picked.size) return deleteSelection();
       if (f.row.cells.length === 1) {
         if (project.rows.length === 1) return toast('The atlas needs at least one cell', true);
         project.rows.splice(f.ri, 1);
@@ -797,6 +840,7 @@
       const cells = Array.from({ length: n }, (_, i) => Atlas.cell({ stops: [{ c: P[i % P.length].id, s: 0, p: 0 }] }));
       project.rows.splice(at, 0, { id: Atlas.uid('r'), h: ref ? ref.h : 120, cells });
       sel = cells[0].id;
+      picked.clear();
       done();
     },
     'row-add-end'() {
@@ -809,6 +853,7 @@
       const r = { id: Atlas.uid('r'), h: f.row.h, cells: f.row.cells.map(cloneCell) };
       project.rows.splice(f.ri + 1, 0, r);
       sel = r.cells[f.ci].id;
+      picked.clear();
       done();
     },
     'row-up'() {
@@ -847,6 +892,7 @@
       const c = Object.assign(clone(clip), { id: f.cell.id, w: f.cell.w });
       c.stops.forEach(st => { if (!ids.has(st.c)) st.c = project.palette[0].id; });
       f.row.cells[f.ci] = c;
+      picked.clear();
       done();
     },
     'look-row'() {
@@ -889,22 +935,28 @@
     return `${slug}-${project.width}x${project.height}.png`;
   }
 
+  let exporting = false;
   async function exportPng() {
-    const W = project.width;
-    const H = project.height;
+    if (exporting) return;
+    exporting = true;
+    // Edits made while a big sheet renders must not end up half in the file.
+    const snap = clone(project);
+    const W = snap.width;
+    const H = snap.height;
+    const name = fileName();
     toast(`Rendering ${W} × ${H}…`, false, true);
-    await new Promise(r => setTimeout(r, 30));
     try {
+      const img = await Atlas.renderAsync(snap, W, H, share => toast(`Rendering ${W} × ${H}… ${Math.round(share * 100)}%`, false, true));
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
-      canvas.getContext('2d').putImageData(Atlas.render(project, W, H), 0, 0);
+      canvas.getContext('2d').putImageData(img, 0, 0);
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-      const bytes = Atlas.embed(new Uint8Array(await blob.arrayBuffer()), JSON.stringify(project));
+      const bytes = Atlas.embed(new Uint8Array(await blob.arrayBuffer()), JSON.stringify(snap));
       const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName();
+      a.download = name;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -912,6 +964,8 @@
       toast(`Saved ${a.download}`);
     } catch (e) {
       toast('Export failed: ' + e.message, true);
+    } finally {
+      exporting = false;
     }
   }
 
@@ -1092,8 +1146,6 @@
     if (segBtn) return onSeg(segBtn);
     const chip = t.closest('[data-chip], [data-noise-chip]');
     if (chip) return onChip(chip);
-    const hit = t.closest('.hit');
-    if (hit) return e.shiftKey ? toggleSelect(hit.dataset.cell) : select(hit.dataset.cell);
     const menuBtn = t.closest('[data-menu]');
     if (menuBtn) {
       const menu = menuBtn.parentElement;
@@ -1113,11 +1165,15 @@
   // Dragging the gaps between cells and rows. Positions are in export pixels, so the snap grid
   // matches the texture; holding Ctrl moves freely.
   $('#overlay').addEventListener('pointerdown', e => {
+    // preventDefault below also keeps focus where it was; a slider or field still focused would
+    // take the arrow and Delete keys meant for the cells.
+    if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
     const gut = e.target.closest('.gut');
     if (!gut) {
       startCellDrag(e);
       return;
     }
+    if (e.button !== 0) return;
     e.preventDefault();
     const [kind, a, b] = gut.dataset.gut.split(':');
     const X = Atlas.layout(project, project.width, project.height);
@@ -1137,6 +1193,7 @@
       hi: lo + ((wa + wb) / sum) * avail,
       b0: lo + (wa / sum) * avail,
       start: x ? e.clientX : e.clientY,
+      undo: list.map(item => item[key]), // sizes before the drag, for Esc
       scale: x ? project.width / view.clientWidth : project.height / view.clientHeight,
       moved: false,
     };
@@ -1146,6 +1203,7 @@
 
   window.addEventListener('pointermove', e => {
     if (!drag) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) return endDrag(); // released where we could not see it
     const pos = drag.axis === 'x' ? e.clientX : e.clientY;
     // A click without movement must not snap the edge somewhere else.
     if (!drag.moved && Math.abs(pos - drag.start) < 3) return;
@@ -1201,8 +1259,9 @@
     tip.classList.add('show');
   }
 
-  function endDrag() {
+  function endDrag(cancel = false) {
     if (!drag) return;
+    if (cancel === true) drag.list.forEach((item, i) => { item[drag.key] = drag.undo[i]; });
     drag = null;
     showGrid(false);
     dragTip().classList.remove('show');
@@ -1215,24 +1274,39 @@
   window.addEventListener('pointerup', endDrag);
   window.addEventListener('pointercancel', endDrag);
 
-  // The click that ends a drag must not select the cell under the pointer.
+  // The click that ends a drag must not reach a button under the pointer, wherever the cell was
+  // dropped. Some browsers send that click a moment after pointerup, so it stays armed for a short
+  // while, and only for a real mouse click: clicks from keys or from code (the export link) pass.
+  let swallowUntil = 0;
   function swallowNextClick() {
-    const swallow = ev => ev.stopPropagation();
-    window.addEventListener('click', swallow, { capture: true, once: true });
-    setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+    swallowUntil = performance.now() + 400;
   }
+  window.addEventListener('pointerdown', () => { swallowUntil = 0; }, true);
+  window.addEventListener('click', e => {
+    if (performance.now() > swallowUntil || !e.isTrusted || e.detail === 0) return;
+    swallowUntil = 0;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
 
   // Dragging a cell onto another swaps them live: the other cell glides into the freed place, the
   // dragged one shows where it will land and a thumbnail follows the pointer. Releasing keeps the
   // swap; Esc or leaving the atlas puts everything back. Swaps keep each place's size, so the
   // places stay where they were for the whole drag.
   let cellDrag = null;
+  let stopDrag = false; // a gradient stop is being dragged
 
   function startCellDrag(e) {
+    if (cellDrag) stopCellDrag(false); // a drag whose release never arrived
     const hit = e.target.closest('.hit');
     if (!hit || e.button !== 0) return;
     e.preventDefault(); // no text selection or native drag, which would steal the pointer
-    if (e.shiftKey) return;
+    // Selection happens here, not on click: with the pointer captured by the overlay, the click
+    // lands on the overlay instead of the cell, so a plain click used to select nothing.
+    if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      toggleSelect(hit.dataset.cell);
+      return;
+    }
     cellDrag = { id: hit.dataset.cell, x: e.clientX, y: e.clientY, moved: false, over: null, ghost: null, rows: null, places: null };
     try { $('#overlay').setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
   }
@@ -1313,6 +1387,8 @@
 
   window.addEventListener('pointermove', e => {
     if (!cellDrag) return;
+    // The button came up outside the window and the release never arrived: put everything back.
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) return stopCellDrag(false);
     if (!cellDrag.moved) {
       if (Math.hypot(e.clientX - cellDrag.x, e.clientY - cellDrag.y) < 6) return;
       cellDrag.moved = true;
@@ -1328,7 +1404,8 @@
     const box = $('.canvas-box').getBoundingClientRect();
     const x = e.clientX - box.left;
     const y = e.clientY - box.top;
-    if (x < -24 || y < -24 || x > box.width + 24 || y > box.height + 24) return previewSwap(null);
+    cellDrag.outside = x < -24 || y < -24 || x > box.width + 24 || y > box.height + 24;
+    if (cellDrag.outside) return previewSwap(null);
     let under = null;
     for (const [id, pl] of Object.entries(cellDrag.places)) {
       const [px, py, pw, ph] = pl.css;
@@ -1340,9 +1417,10 @@
 
   function stopCellDrag(keep) {
     if (!cellDrag) return;
-    const { moved, id, over, ghost } = cellDrag;
+    const { moved, id, over, ghost, outside } = cellDrag;
     if (!moved) {
-      cellDrag = null; // a plain click selects as usual
+      cellDrag = null;
+      if (keep) select(id); // a plain click picks this one cell and drops the rest
       return;
     }
     if (!keep && over) previewSwap(null);
@@ -1356,11 +1434,21 @@
       picked.clear();
       done();
       toast('Cells swapped · Ctrl+Z to undo');
+    } else if (outside) {
+      toast('Dropped outside the atlas · nothing changed');
+    } else if (keep) {
+      select(id); // a click that wobbled into a short drag still picks the cell
     }
   }
   window.addEventListener('pointerup', () => stopCellDrag(true));
   window.addEventListener('pointercancel', () => stopCellDrag(false));
+  $('#overlay').addEventListener('lostpointercapture', () => { if (cellDrag && cellDrag.moved) stopCellDrag(false); });
+  window.addEventListener('blur', () => {
+    stopCellDrag(false);
+    endDrag();
+  });
   $('#overlay').addEventListener('dragstart', e => e.preventDefault());
+  $('#overlay').addEventListener('contextmenu', e => e.preventDefault()); // Ctrl+click on a Mac picks cells
 
   function swapInPlace(a, b) {
     const fa = find(a);
@@ -1375,7 +1463,7 @@
   $('#inspector').addEventListener('pointerdown', e => {
     const bar = e.target.closest('#gbar');
     const f = current();
-    if (!bar || !f) return;
+    if (!bar || !f || e.button !== 0) return;
     e.preventDefault();
     const c = f.cell;
     const rect = bar.getBoundingClientRect();
@@ -1398,7 +1486,9 @@
     const moving = c.stops[selStop];
     const startY = e.clientY;
     let removing = false;
+    stopDrag = true;
     const move = ev => {
+      if (ev.pointerType === 'mouse' && !(ev.buttons & 1)) return up(); // released where we could not see it
       moving.p = pos(ev.clientX);
       removing = c.stops.length > 2 && Math.abs(ev.clientY - startY) > 40;
       const h = $(`#gbar .handle[data-stop="${c.stops.indexOf(moving)}"]`);
@@ -1412,6 +1502,9 @@
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      stopDrag = false;
+      swallowNextClick();
       if (removing) {
         c.stops.splice(c.stops.indexOf(moving), 1);
         selStop = 0;
@@ -1425,12 +1518,22 @@
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 
   document.addEventListener('keydown', e => {
     const t = e.target;
     if (t.matches('input:not([type]), input[type=text], textarea, [contenteditable]')) return;
     const key = e.key.toLowerCase();
+    // While dragging, keys could change the rows under the drag; only Esc counts, and it cancels.
+    if ((cellDrag && cellDrag.moved) || drag || stopDrag) {
+      e.preventDefault();
+      if (e.key === 'Escape') {
+        stopCellDrag(false);
+        endDrag(true);
+      }
+      return;
+    }
     if (e.ctrlKey || e.metaKey) {
       const map = { z: e.shiftKey ? 'redo' : 'undo', y: 'redo', d: 'cell-dup', s: 'export', c: 'copy', v: 'paste' };
       if (!map[key] || ((key === 'c' || key === 'v') && !sel)) return;

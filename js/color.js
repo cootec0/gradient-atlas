@@ -104,8 +104,11 @@ const Color = (() => {
   }
 
   const shadeCache = new Map();
+  // Shades are cached at 4 decimals; computing the rounded value too keeps every render of the same
+  // atlas identical, whichever nearby value happened to be asked first.
   function shade(hex, t, shading) {
-    const key = hex + '|' + t.toFixed(4) + '|' + shading.hue + '|' + shading.light + '|' + shading.dark;
+    t = Math.round(t * 1e4) / 1e4;
+    const key = hex + '|' + t + '|' + shading.hue + '|' + shading.light + '|' + shading.dark;
     let v = shadeCache.get(key);
     if (!v) {
       if (shadeCache.size > 30000) shadeCache.clear();
