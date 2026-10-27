@@ -559,12 +559,13 @@ const Atlas = (() => {
   }
 
   // (x0, y0, cw, ch) is the cell; (ax0..ax1, ay0..ay1) the painted area, larger when gaps bleed.
-  function drawCell(u32, W, c, p, s, x0, y0, cw, ch, ax0, ay0, ax1, ay1) {
+  // Coordinates are relative to the area's own buffer, so a cell looks the same wherever it sits.
+  function drawCell(u32, W, c, p, s, x0, y0, cw, ch, ax0, ay0, ax1, ay1, lutN = LUT_N) {
     if (cw <= 0 || ch <= 0 || ax1 <= ax0 || ay1 <= ay0) return;
-    const lut = cellLut(c, p);
-    const last = LUT_N - 1;
-    const px = new Uint32Array(LUT_N);
-    for (let i = 0; i < LUT_N; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
+    const lut = cellLut(c, p, lutN);
+    const last = lutN - 1;
+    const px = new Uint32Array(lutN);
+    for (let i = 0; i < lutN; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
     const noisy = c.mode === 'noise';
     const solid = c.source === 'solid';
     if (solid && !noisy) {
@@ -666,7 +667,61 @@ const Atlas = (() => {
     }
   }
 
-  function render(p, W, H, reuse) {
+  // Everything outside a cell that changes how it looks.
+  const sheetKey = (p, s) => JSON.stringify([p.palette, p.shading, p.mix, p.dither, s]);
+  const cellKey = c => JSON.stringify(c, (k, v) => (k === 'id' || k === 'w' || k === 'noiseMemory' ? undefined : v));
+
+  const DRAFT_MS = 0.5; // what one draft cell may cost
+
+  // Pixels of one cell's painted area, from the cache when nothing about it changed. A draft is
+  // quick and coarse, for when the frame is out of time; it is never cached.
+  // `draft` is the expected cost of the full paint in ms, or 0 for a full paint.
+  function cellPixels(cache, sheet, C, R, p, s, ax0, ay0, ax1, ay1, draft) {
+    const aw = ax1 - ax0;
+    const ah = ay1 - ay0;
+    const key = cache && `${sheet}|${cellKey(C.cell)}|${C.x1 - C.x0},${R.y1 - R.y0},${ax0 - C.x0},${ay0 - R.y0},${aw},${ah}`;
+    const hit = cache && cache.map.get(key);
+    if (hit) {
+      hit.gen = cache.gen;
+      return hit.buf;
+    }
+    const buf = new Uint32Array(Math.max(0, aw * ah));
+    if (draft) {
+      // Coarser the dearer the cell, so a draft costs about the same whatever it shows.
+      const f = Math.min(16, Math.max(2, Math.ceil(Math.sqrt(draft / DRAFT_MS))));
+      const dw = Math.ceil(aw / f);
+      const dh = Math.ceil(ah / f);
+      const small = new Uint32Array(dw * dh);
+      drawCell(small, dw, C.cell, p, s / f, (C.x0 - ax0) / f, (R.y0 - ay0) / f, (C.x1 - C.x0) / f, (R.y1 - R.y0) / f, 0, 0, dw, dh, 128);
+      for (let y = 0; y < ah; y++) {
+        const at = y * aw;
+        if (y % f) {
+          buf.copyWithin(at, at - aw, at); // same as the row above
+          continue;
+        }
+        const from = (y / f) * dw;
+        for (let x = 0; x < aw; x++) buf[at + x] = small[from + ((x / f) | 0)];
+      }
+      cache.drafts++;
+      return buf;
+    }
+    drawCell(buf, aw, C.cell, p, s, C.x0 - ax0, R.y0 - ay0, C.x1 - C.x0, R.y1 - R.y0, 0, 0, aw, ah);
+    if (cache) cache.map.set(key, { buf, gen: cache.gen });
+    return buf;
+  }
+
+  // `drafts` counts the cells of the last render that were painted as drafts; `rates` holds the
+  // measured cost of a pixel per kind of cell, to tell whether the next one fits in the time left.
+  function createCache() {
+    return { map: new Map(), gen: 0, drafts: 0, rates: new Map() };
+  }
+
+  const costKind = c => (c.mode === 'noise' ? 'noise/' + c.noise + '/' + c.noiseDetail : c.source === 'solid' ? 'flat' : c.mode);
+
+  // `cache` (from createCache) keeps cell pixels between renders, so only changed cells are redrawn.
+  // With `budget` (ms, needs a cache) cells that would not be ready in time are painted as drafts;
+  // render again to finish them. `progress` makes sure at least one of them is finished.
+  function render(p, W, H, reuse, cache, { budget = 0, progress = false } = {}) {
     const img = reuse && reuse.width === W && reuse.height === H ? reuse : new ImageData(W, H);
     const u32 = new Uint32Array(img.data.buffer);
     const bg = Color.hexToRgb(p.gapColor).map(v => Math.round(v * 255));
@@ -676,16 +731,40 @@ const Atlas = (() => {
     const before = Math.ceil(L.G / 2);
     const after = Math.floor(L.G / 2);
     const lastRow = L.rows.length - 1;
+    const sheet = cache ? sheetKey(p, L.s) : '';
+    if (!cache) budget = 0;
+    const deadline = budget ? performance.now() + budget : Infinity;
+    let finished = false; // a missing cell was painted in full this time
+    if (cache) {
+      cache.gen++;
+      cache.drafts = 0;
+    }
     for (const R of L.rows) {
-      const ay0 = !bleed ? R.y0 : R.ri === 0 ? 0 : R.y0 - before;
-      const ay1 = !bleed ? R.y1 : R.ri === lastRow ? H : R.y1 + after;
+      const ay0 = Math.max(0, !bleed ? R.y0 : R.ri === 0 ? 0 : R.y0 - before);
+      const ay1 = Math.min(H, !bleed ? R.y1 : R.ri === lastRow ? H : R.y1 + after);
       const lastCell = R.cells.length - 1;
       for (const C of R.cells) {
-        const ax0 = !bleed ? C.x0 : C.ci === 0 ? 0 : C.x0 - before;
-        const ax1 = !bleed ? C.x1 : C.ci === lastCell ? W : C.x1 + after;
-        drawCell(u32, W, C.cell, p, L.s, C.x0, R.y0, C.x1 - C.x0, R.y1 - R.y0, ax0, ay0, ax1, ay1);
+        const ax0 = Math.max(0, !bleed ? C.x0 : C.ci === 0 ? 0 : C.x0 - before);
+        const ax1 = Math.min(W, !bleed ? C.x1 : C.ci === lastCell ? W : C.x1 + after);
+        if (ax1 <= ax0 || ay1 <= ay0 || C.x1 <= C.x0 || R.y1 <= R.y0) continue;
+        const aw = ax1 - ax0;
+        const area = aw * (ay1 - ay0);
+        const kind = budget ? costKind(C.cell) : '';
+        const t0 = performance.now();
+        // Out of time, judging by what this kind of cell cost before: paint a draft instead.
+        const cost = kind ? (cache.rates.get(kind) || 0) * area : 0;
+        const draft = cost > DRAFT_MS && t0 + cost > deadline && !(progress && !finished) ? cost : 0;
+        const buf = cellPixels(cache, sheet, C, R, p, L.s, ax0, ay0, ax1, ay1, draft);
+        const ms = performance.now() - t0;
+        if (kind && !draft && ms > 0.5) { // a real paint, not a near free cache hit
+          cache.rates.set(kind, ms / area);
+          finished = true;
+        }
+        for (let y = ay0; y < ay1; y++) u32.set(buf.subarray((y - ay0) * aw, (y - ay0 + 1) * aw), y * W + ax0);
       }
     }
+    // Cells unused for a few renders go, so swapping back and forth while dragging stays cached.
+    if (cache) for (const [k, v] of cache.map) if (cache.gen - v.gen > 4) cache.map.delete(k);
     return img;
   }
 
@@ -745,6 +824,6 @@ const Atlas = (() => {
   return {
     REF, SIZES, GRIDS, LOOK_KEYS, LAYOUTS, NOISES, NOISE_KEYS, NOISE_START, uid, cell,
     exampleProject, blankProject, randomProject, materialProject, layoutRows, normalize,
-    layout, render, cssGradient, embed, extract,
+    layout, render, createCache, cssGradient, embed, extract,
   };
 })();
