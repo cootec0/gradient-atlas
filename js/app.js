@@ -506,7 +506,9 @@
     cw = Math.floor(cw);
     ch = Math.floor(ch);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
-    const k = Math.min(1, 2048 / Math.max(cw * dpr, ch * dpr));
+    // Never more pixels than the texture itself has (or than the screen shows, when that is more):
+    // past that a sharper preview only costs time.
+    const k = Math.min(1, 2048 / Math.max(cw * dpr, ch * dpr), Math.max(1 / dpr, project.width / (cw * dpr)));
     const pw = Math.max(1, Math.round(cw * dpr * k));
     const ph = Math.max(1, Math.round(ch * dpr * k));
     if (view.width !== pw || view.height !== ph) {
@@ -930,22 +932,28 @@
     return `${slug}-${project.width}x${project.height}.png`;
   }
 
+  let exporting = false;
   async function exportPng() {
-    const W = project.width;
-    const H = project.height;
+    if (exporting) return;
+    exporting = true;
+    // Edits made while a big sheet renders must not end up half in the file.
+    const snap = clone(project);
+    const W = snap.width;
+    const H = snap.height;
+    const name = fileName();
     toast(`Rendering ${W} × ${H}…`, false, true);
-    await new Promise(r => setTimeout(r, 30));
     try {
+      const img = await Atlas.renderAsync(snap, W, H, share => toast(`Rendering ${W} × ${H}… ${Math.round(share * 100)}%`, false, true));
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
-      canvas.getContext('2d').putImageData(Atlas.render(project, W, H), 0, 0);
+      canvas.getContext('2d').putImageData(img, 0, 0);
       const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
-      const bytes = Atlas.embed(new Uint8Array(await blob.arrayBuffer()), JSON.stringify(project));
+      const bytes = Atlas.embed(new Uint8Array(await blob.arrayBuffer()), JSON.stringify(snap));
       const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
       const a = document.createElement('a');
       a.href = url;
-      a.download = fileName();
+      a.download = name;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -953,6 +961,8 @@
       toast(`Saved ${a.download}`);
     } catch (e) {
       toast('Export failed: ' + e.message, true);
+    } finally {
+      exporting = false;
     }
   }
 
@@ -1176,6 +1186,7 @@
       hi: lo + ((wa + wb) / sum) * avail,
       b0: lo + (wa / sum) * avail,
       start: x ? e.clientX : e.clientY,
+      undo: list.map(item => item[key]), // sizes before the drag, for Esc
       scale: x ? project.width / view.clientWidth : project.height / view.clientHeight,
       moved: false,
     };
@@ -1241,8 +1252,9 @@
     tip.classList.add('show');
   }
 
-  function endDrag() {
+  function endDrag(cancel = false) {
     if (!drag) return;
+    if (cancel === true) drag.list.forEach((item, i) => { item[drag.key] = drag.undo[i]; });
     drag = null;
     showGrid(false);
     dragTip().classList.remove('show');
@@ -1256,16 +1268,16 @@
   window.addEventListener('pointercancel', endDrag);
 
   // The click that ends a drag must not reach a button under the pointer, wherever the cell was
-  // dropped. Some browsers send that click a moment after pointerup, so it stays armed until the
-  // next press instead of for one tick.
-  let swallowing = false;
+  // dropped. Some browsers send that click a moment after pointerup, so it stays armed for a short
+  // while, and only for a real mouse click: clicks from keys or from code (the export link) pass.
+  let swallowUntil = 0;
   function swallowNextClick() {
-    swallowing = true;
+    swallowUntil = performance.now() + 400;
   }
-  window.addEventListener('pointerdown', () => { swallowing = false; }, true);
+  window.addEventListener('pointerdown', () => { swallowUntil = 0; }, true);
   window.addEventListener('click', e => {
-    if (!swallowing) return;
-    swallowing = false;
+    if (performance.now() > swallowUntil || !e.isTrusted || e.detail === 0) return;
+    swallowUntil = 0;
     e.stopPropagation();
     e.preventDefault();
   }, true);
@@ -1416,6 +1428,8 @@
       toast('Cells swapped · Ctrl+Z to undo');
     } else if (outside) {
       toast('Dropped outside the atlas · nothing changed');
+    } else if (keep) {
+      select(id); // a click that wobbled into a short drag still picks the cell
     }
   }
   window.addEventListener('pointerup', () => stopCellDrag(true));
@@ -1496,6 +1510,15 @@
     const t = e.target;
     if (t.matches('input:not([type]), input[type=text], textarea, [contenteditable]')) return;
     const key = e.key.toLowerCase();
+    // While dragging, keys could change the rows under the drag; only Esc counts, and it cancels.
+    if ((cellDrag && cellDrag.moved) || drag) {
+      e.preventDefault();
+      if (e.key === 'Escape') {
+        stopCellDrag(false);
+        endDrag(true);
+      }
+      return;
+    }
     if (e.ctrlKey || e.metaKey) {
       const map = { z: e.shiftKey ? 'redo' : 'undo', y: 'redo', d: 'cell-dup', s: 'export', c: 'copy', v: 'paste' };
       if (!map[key] || ((key === 'c' || key === 'v') && !sel)) return;
