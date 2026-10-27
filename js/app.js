@@ -475,7 +475,7 @@
   // Heavy cells that do not fit in a frame show as drafts first and are finished in short slices
   // once input pauses, so dragging a slider over a noisy atlas stays smooth.
   const FRAME_BUDGET = 20;
-  const REFINE_BUDGET = 40;
+  const REFINE_BUDGET = 20;
   let refineTimer = 0;
 
   function draw() {
@@ -1173,6 +1173,7 @@
       startCellDrag(e);
       return;
     }
+    if (e.button !== 0) return;
     e.preventDefault();
     const [kind, a, b] = gut.dataset.gut.split(':');
     const X = Atlas.layout(project, project.width, project.height);
@@ -1293,6 +1294,7 @@
   // swap; Esc or leaving the atlas puts everything back. Swaps keep each place's size, so the
   // places stay where they were for the whole drag.
   let cellDrag = null;
+  let stopDrag = false; // a gradient stop is being dragged
 
   function startCellDrag(e) {
     if (cellDrag) stopCellDrag(false); // a drag whose release never arrived
@@ -1446,6 +1448,7 @@
     endDrag();
   });
   $('#overlay').addEventListener('dragstart', e => e.preventDefault());
+  $('#overlay').addEventListener('contextmenu', e => e.preventDefault()); // Ctrl+click on a Mac picks cells
 
   function swapInPlace(a, b) {
     const fa = find(a);
@@ -1460,7 +1463,7 @@
   $('#inspector').addEventListener('pointerdown', e => {
     const bar = e.target.closest('#gbar');
     const f = current();
-    if (!bar || !f) return;
+    if (!bar || !f || e.button !== 0) return;
     e.preventDefault();
     const c = f.cell;
     const rect = bar.getBoundingClientRect();
@@ -1483,7 +1486,9 @@
     const moving = c.stops[selStop];
     const startY = e.clientY;
     let removing = false;
+    stopDrag = true;
     const move = ev => {
+      if (ev.pointerType === 'mouse' && !(ev.buttons & 1)) return up(); // released where we could not see it
       moving.p = pos(ev.clientX);
       removing = c.stops.length > 2 && Math.abs(ev.clientY - startY) > 40;
       const h = $(`#gbar .handle[data-stop="${c.stops.indexOf(moving)}"]`);
@@ -1497,6 +1502,9 @@
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      stopDrag = false;
+      swallowNextClick();
       if (removing) {
         c.stops.splice(c.stops.indexOf(moving), 1);
         selStop = 0;
@@ -1510,6 +1518,7 @@
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
   });
 
   document.addEventListener('keydown', e => {
@@ -1517,7 +1526,7 @@
     if (t.matches('input:not([type]), input[type=text], textarea, [contenteditable]')) return;
     const key = e.key.toLowerCase();
     // While dragging, keys could change the rows under the drag; only Esc counts, and it cancels.
-    if ((cellDrag && cellDrag.moved) || drag) {
+    if ((cellDrag && cellDrag.moved) || drag || stopDrag) {
       e.preventDefault();
       if (e.key === 'Escape') {
         stopCellDrag(false);

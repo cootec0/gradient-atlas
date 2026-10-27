@@ -743,7 +743,7 @@ const Atlas = (() => {
   }
 
   const DRAFT_MS = 1; // about what one draft cell may cost
-  const DRAFT_MAX = 6; // the coarsest draft, in pixels per draft pixel
+  const DRAFT_MAX = 12; // the coarsest draft, in pixels per draft pixel
   const costKind = c => (c.mode === 'noise' ? 'noise/' + c.noise + '/' + c.noiseDetail : c.source === 'solid' ? 'flat' : c.mode);
 
   // Pixels of one cell's painted area, from the cache when nothing about it changed. When its field
@@ -789,9 +789,11 @@ const Atlas = (() => {
     }
     if (!job.done) cache.drafts++;
     if (ctx.fieldsOnly) return null;
+    if (!job.done && cache && job.draftKey === pk) return job.draftBuf; // the draft from last time
     const buf = new Uint32Array(aw * ah);
     if (!job.done) {
-      // Not ready: a coarse draft, coarser the dearer the cell, so each costs about the same.
+      // Not ready: a coarse draft, coarser the dearer the cell, so each costs about the same. It is
+      // kept with the unfinished field until that is done.
       const rate = cache.rates.get(costKind(c));
       const f = rate === undefined ? DRAFT_MAX : Math.min(DRAFT_MAX, Math.max(2, Math.ceil(Math.sqrt((rate * aw * ah) / DRAFT_MS))));
       const dw = Math.ceil(aw / f);
@@ -807,8 +809,13 @@ const Atlas = (() => {
         const from = (y / f) * dw;
         for (let x = 0; x < aw; x++) buf[at + x] = small[from + ((x / f) | 0)];
       }
+      if (cache) {
+        job.draftKey = pk;
+        job.draftBuf = buf;
+      }
       return buf;
     }
+    job.draftBuf = null;
     colorize(buf, aw, ah, job.field, c, p, tint);
     if (cache && ctx.store) cache.map.set(pk, { buf, gen: cache.gen });
     return buf;
