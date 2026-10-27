@@ -14,13 +14,14 @@ Open `index.html` in a browser. No install and no build step. Without internet t
 
 ## How it works
 
-- **Palette** – any number of base colours. Every cell refers to them, so changing a colour updates the whole atlas. *Generate* (or `Space`) rolls new colours in the chosen style; locked colours stay.
+- **Palette** – any number of base colours. Every cell refers to them, so changing a colour updates the whole atlas. *Generate* (or `Space`) rolls new colours in the chosen style; locked colours stay. Styles include materials (concrete, granite, sandstone, slate, basalt, brick, limestone); picking a style rolls a palette at once. *New → Material atlas* lays out noise squares, tiles and strips with the current palette.
 - **Shading** – how lighter and darker shades are made: highlights drift towards yellow, shadows towards blue.
 - **Cells** – rows of cells; drag the gaps in the preview to resize them. With *Snap to grid* (Sheet) dragged edges stick to the grid in export pixels; hold `Ctrl` to move freely. Each cell has:
   - colour: *Solid*, *Gradient* (stops on a bar, each a palette colour plus shade) or *Shades* (one colour from light to dark),
   - direction: linear at any angle or radial,
-  - blend: *Smooth* (with hardness), *Steps* (visible bands) or *Mosaic* (tiles with size and jitter),
-  - *Seamless*: mirrors the gradient so the cell tiles without a seam.
+  - blend: *Smooth* (with hardness), *Steps* (visible bands), *Mosaic* (tiles with size and jitter) or *Noise* (clouds, grain or stones, with size and how much noise replaces the gradient),
+  - *Seamless*: mirrors the gradient so the cell tiles without a seam; in *Noise* it wraps the noise at the cell edges instead, so a UV over the whole cell shows no seam.
+  - Solid cells can be *Flat* or *Noise*: noise lets the colour drift around its shade by the chosen variation.
 - **Sheet** – export size, outer margin, gaps and their colour, snap grid and its size. *Cell bleed* fills the gaps with the nearest cell colour, so texture filtering and mipmaps never pick up a border. *Dither* (on by default) adds a half-step of noise to smooth blends, so 8-bit gradients show no bands; flat colours, steps and tiles stay exact.
 - **Export PNG** – the PNG carries the project inside it. Open it again (*Open PNG* or drop it on the page) to keep editing. The current project is also kept in the browser between visits.
 

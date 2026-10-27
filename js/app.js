@@ -246,8 +246,11 @@
     const { row, ri, cell: c, ci } = f;
     const sumW = row.cells.reduce((a, x) => a + x.w, 0);
     const sumH = project.rows.reduce((a, r) => a + r.h, 0);
+    const noisy = c.mode === 'noise';
     const kind = { solid: 'Solid', gradient: 'Gradient', shades: 'Shades' }[c.source];
-    const blend = c.source === 'solid' ? '' : ' · ' + { smooth: 'Smooth', steps: 'Steps', mosaic: 'Mosaic' }[c.mode];
+    const blend = c.source === 'solid'
+      ? (noisy ? ' · Noise' : '')
+      : ' · ' + { smooth: 'Smooth', steps: 'Steps', mosaic: 'Mosaic', noise: 'Noise' }[c.mode];
     let h = `
       <div class="insp-head">
         <div><div class="eyebrow">${kind}${blend}</div><div class="insp-title">Row ${ri + 1} · Cell ${ci + 1}</div></div>
@@ -263,7 +266,14 @@
         ${seg('k:source', c.source, [['solid', 'Solid'], ['gradient', 'Gradient'], ['shades', 'Shades']])}
         ${sourceBody(c)}
       </section>`;
-    if (c.source !== 'solid') {
+    if (c.source === 'solid') {
+      h += `
+      <section class="group">
+        <div class="group-title">Surface</div>
+        ${seg('k:surface', noisy ? 'noise' : 'flat', [['flat', 'Flat'], ['noise', 'Noise']])}
+        ${noisy ? noiseBody(c) + seamlessToggle(c) + TILE_PREVIEW : ''}
+      </section>`;
+    } else {
       h += `
       <section class="group">
         <div class="group-title">Direction</div>
@@ -275,11 +285,10 @@
       </section>
       <section class="group">
         <div class="group-title">Blend</div>
-        ${seg('k:mode', c.mode, [['smooth', 'Smooth'], ['steps', 'Steps'], ['mosaic', 'Mosaic']])}
+        ${seg('k:mode', c.mode, [['smooth', 'Smooth'], ['steps', 'Steps'], ['mosaic', 'Mosaic'], ['noise', 'Noise']])}
         ${modeBody(c)}
-        ${c.shape === 'linear' ? toggle('k:seamless', c.seamless, 'Seamless', 'Mirrors the gradient so the cell tiles without a seam') : ''}
-        <div class="tile-wrap"><canvas class="tile-prev" id="tilePrev"></canvas></div>
-        <div class="hint" style="text-align:center">Tiling preview (3 × 3)</div>
+        ${seamlessToggle(c)}
+        ${TILE_PREVIEW}
       </section>`;
     }
     h += `
@@ -341,7 +350,29 @@
       + range({ label: 'Dark end', bind: 'k:dark', min: 0, max: 150, value: c.dark, mul: 100, fmt: 'pct' });
   }
 
+  // One cell repeated 3 x 3, to check that its edges meet.
+  const TILE_PREVIEW = `<div class="tile-wrap"><canvas class="tile-prev" id="tilePrev"></canvas></div>
+        <div class="hint" style="text-align:center">Tiling preview (3 × 3)</div>`;
+
+  function seamlessToggle(c) {
+    if (c.mode === 'noise') {
+      return toggle('k:seamless', c.seamless, 'Seamless', 'Noise wraps at the cell edges, so a UV over the whole cell shows no seam');
+    }
+    return c.shape === 'linear' ? toggle('k:seamless', c.seamless, 'Seamless', 'Mirrors the gradient so the cell tiles without a seam') : '';
+  }
+
+  function noiseBody(c) {
+    const amount = c.source === 'solid'
+      ? range({ label: 'Variation', bind: 'k:spread', min: 0, max: 100, value: c.spread, mul: 100, fmt: 'pct' })
+      : range({ label: 'Noise mix', bind: 'k:noiseMix', min: 0, max: 100, value: c.noiseMix, mul: 100, fmt: 'pct' });
+    return seg('k:noise', c.noise, [['clouds', 'Clouds'], ['grain', 'Grain'], ['stones', 'Stones']])
+      + range({ label: 'Noise size', bind: 'k:noiseSize', min: 2, max: 256, value: c.noiseSize, fmt: 'px' })
+      + amount
+      + `<button class="btn sm wide" data-act="reseed" style="margin:-2px 0 14px">${icon('dice')} Reshuffle noise</button>`;
+  }
+
   function modeBody(c) {
+    if (c.mode === 'noise') return noiseBody(c);
     if (c.mode === 'steps') return range({ label: 'Steps', bind: 'k:steps', min: 2, max: 24, value: c.steps });
     if (c.mode === 'mosaic') {
       return range({ label: 'Tile size', bind: 'k:tile', min: 2, max: 128, value: c.tile, fmt: 'px' })
@@ -519,6 +550,10 @@
     'new-random'() {
       load(Object.assign(Atlas.randomProject(clone(project.palette)), sheetSettings()));
       toast('Random atlas · Ctrl+Z to go back');
+    },
+    'new-material'() {
+      load(Object.assign(Atlas.materialProject(clone(project.palette)), sheetSettings()));
+      toast('Material atlas · pick a material style for new colours');
     },
 
     'pal-add'() {
@@ -753,6 +788,7 @@
     const f = current();
     if (scope === 'p') setPath(project, key, v);
     else if (!f) return;
+    else if (bind === 'k:surface') f.cell.mode = v === 'noise' ? 'noise' : Atlas.cell().mode; // a solid is flat in every other mode
     else if (scope === 'k') f.cell[key] = v;
     else if (scope === 's') f.cell.stops[stopIndex(f.cell)][key] = v;
     else if (scope === 'share') {
@@ -851,7 +887,12 @@
       draw();
       commit();
     } else if (t.id === 'harmony') {
+      // Picking a style rolls a palette in it right away.
       project.harmony = t.value;
+      if (project.palette.some(p => !p.locked)) {
+        ACTIONS['pal-gen']();
+        toast(`${t.options[t.selectedIndex].text} palette · Ctrl+Z to undo`);
+      }
       commit();
     } else if (t.id === 'fileInput') {
       openFile(t.files[0]);
@@ -1102,7 +1143,9 @@
     const sizes = Atlas.SIZES.map(s => `<option value="${s}">${s}</option>`).join('');
     $('#sizeW').innerHTML = sizes;
     $('#sizeH').innerHTML = sizes;
-    $('#harmony').innerHTML = Object.entries(Color.HARMONIES).map(([k, v]) => `<option value="${k}">${v}</option>`).join('');
+    const options = list => Object.entries(list).map(([k, v]) => `<option value="${k}">${v.name || v}</option>`).join('');
+    $('#harmony').innerHTML = `<optgroup label="Colour styles">${options(Color.HARMONIES)}</optgroup>`
+      + `<optgroup label="Materials">${options(Color.MATERIALS)}</optgroup>`;
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(STORE)); } catch (e) { saved = null; }
     project = Atlas.normalize(saved && saved.app === 'gradient-atlas' ? saved : Atlas.exampleProject());

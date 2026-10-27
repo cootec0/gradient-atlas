@@ -142,12 +142,36 @@ const Color = (() => {
     return rgbToHex(lchToRgb(L, C, ((h % 360) + 360) % 360));
   }
 
-  // Returns new colours for the palette; locked entries keep theirs and set the base hue.
-  function generate(palette, harmony, rnd = Math.random) {
-    const locked = palette.find(p => p.locked);
-    const base = locked ? rgbToLch(hexToRgb(locked.color))[2] : rnd() * 360;
-    return palette.map((p, i) => (p.locked ? p.color : pick(i, palette.length, base, harmony, rnd)));
+  // Material palettes as OKLCH ranges: hue, chroma and lightness.
+  const MATERIALS = {
+    concrete: { name: 'Concrete', h: [70, 100], c: [0.004, 0.016], l: [0.5, 0.82] },
+    granite: { name: 'Granite', h: [20, 60], c: [0.008, 0.03], l: [0.3, 0.8] },
+    sandstone: { name: 'Sandstone', h: [55, 80], c: [0.04, 0.09], l: [0.52, 0.86] },
+    slate: { name: 'Slate', h: [215, 250], c: [0.01, 0.03], l: [0.3, 0.66] },
+    basalt: { name: 'Basalt', h: [240, 290], c: [0.002, 0.012], l: [0.22, 0.45] },
+    brick: { name: 'Brick', h: [28, 45], c: [0.07, 0.13], l: [0.36, 0.64] },
+    limestone: { name: 'Limestone', h: [75, 95], c: [0.015, 0.04], l: [0.7, 0.9] },
+  };
+
+  // One material colour; the palette runs from light to dark so it covers the whole range.
+  function pickMaterial(i, n, m, base, rnd) {
+    const r = (a, b) => a + rnd() * (b - a);
+    const t = n > 1 ? i / (n - 1) : 0.5;
+    const L = m.l[1] - (m.l[1] - m.l[0]) * t + r(-0.03, 0.03);
+    const h = base + r(-6, 6);
+    return rgbToHex(lchToRgb(L, r(m.c[0], m.c[1]), ((h % 360) + 360) % 360));
   }
 
-  return { hexToRgb, rgbToHex, parseHex, rgbToOklab, oklabToRgb, rgbToLch, lchToRgb, distance, shade, generate, HARMONIES };
+  // Returns new colours for the palette; locked entries keep theirs and set the base hue.
+  function generate(palette, harmony, rnd = Math.random) {
+    const m = MATERIALS[harmony];
+    const locked = palette.find(p => p.locked);
+    const base = m ? m.h[0] + rnd() * (m.h[1] - m.h[0]) : locked ? rgbToLch(hexToRgb(locked.color))[2] : rnd() * 360;
+    return palette.map((p, i) => {
+      if (p.locked) return p.color;
+      return m ? pickMaterial(i, palette.length, m, base, rnd) : pick(i, palette.length, base, harmony, rnd);
+    });
+  }
+
+  return { hexToRgb, rgbToHex, parseHex, rgbToOklab, oklabToRgb, rgbToLch, lchToRgb, distance, shade, generate, HARMONIES, MATERIALS };
 })();

@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
 <!-- Raise ?v= on style.css and the scripts with every release, so browsers never mix old and new files. -->
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -39,6 +39,7 @@
   <symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></symbol>
   <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.9 5.6 5.6 1.9-5.6 1.9L12 18l-1.9-5.6-5.6-1.9 5.6-1.9z"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-stone" viewBox="0 0 24 24"><path d="M4 16l2.5-7L13 5l6 3.5 1.5 7.5-5.5 4H8.5z"/><path d="M9.5 10.5l3 2 3.5-1"/></symbol>
   <symbol id="i-rows" viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="5" rx="1.5"/><rect x="4" y="14" width="16" height="5" rx="1.5"/></symbol>
 </svg>
 
@@ -66,6 +67,7 @@
       <div class="menu-list">
         <button data-act="new-example"><svg class="ic"><use href="#i-sparkle"/></svg><span><b>Example atlas</b><small>Greens, olives, browns and orange</small></span></button>
         <button data-act="new-blank"><svg class="ic"><use href="#i-grid"/></svg><span><b>Blank grid</b><small>3 × 3 solid cells, your palette</small></span></button>
+        <button data-act="new-material"><svg class="ic"><use href="#i-stone"/></svg><span><b>Material atlas</b><small>Stone, concrete and more with noise, your palette</small></span></button>
         <button data-act="new-random"><svg class="ic"><use href="#i-dice"/></svg><span><b>Surprise me</b><small>Random layout and styles, your palette</small></span></button>
       </div>
     </div>
@@ -124,8 +126,8 @@
 <div class="drop">Drop a Gradient Atlas PNG to open it</div>
 <input type="file" id="fileInput" accept="image/png" hidden>
 
-<script src="js/color.js?v=6"></script>
-<script src="js/atlas.js?v=6"></script>
-<script src="js/app.js?v=6"></script>
+<script src="js/color.js?v=7"></script>
+<script src="js/atlas.js?v=7"></script>
+<script src="js/app.js?v=7"></script>
 </body>
 </html>

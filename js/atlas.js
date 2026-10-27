@@ -5,7 +5,8 @@ const Atlas = (() => {
   const LUT_N = 1024;
   const SIZES = [256, 512, 1024, 2048, 4096];
   const GRIDS = [2, 4, 8, 16, 32, 64, 128, 256]; // snap grid in export pixels
-  const LOOK_KEYS = ['shape', 'angle', 'mode', 'steps', 'tile', 'jitter', 'hardness', 'seamless'];
+  const LOOK_KEYS = ['shape', 'angle', 'mode', 'steps', 'tile', 'jitter', 'hardness', 'noise', 'noiseSize', 'noiseMix', 'seamless'];
+  const NOISES = ['clouds', 'grain', 'stones'];
   const PNG_KEY = 'gradient-atlas';
 
   let counter = 0;
@@ -27,11 +28,15 @@ const Atlas = (() => {
       dark: 1,
       shape: 'linear', // linear | radial
       angle: 0,
-      mode: 'mosaic', // smooth | steps | mosaic
+      mode: 'mosaic', // smooth | steps | mosaic | noise
       steps: 6,
       tile: 10,
       jitter: 0,
       hardness: 0,
+      noise: 'clouds', // clouds | grain | stones
+      noiseSize: 24,
+      noiseMix: 1, // 0 = only the gradient, 1 = only the noise
+      spread: 0.3, // how far a noisy solid colour drifts from its shade
       seamless: true,
       seed: Math.floor(Math.random() * 1e6),
     }, over);
@@ -133,6 +138,23 @@ const Atlas = (() => {
     return baseProject(palette, rows, { name: 'Random atlas' });
   }
 
+  // Stone, concrete and similar surfaces: noise squares, noisy solid tiles and long strips.
+  function materialProject(palette) {
+    const P = palette.map(p => p.id);
+    const at = i => P[i % P.length];
+    const noisy = (noise, over) => cell(Object.assign({ mode: 'noise', noise, noiseSize: 24, noiseMix: 1, seamless: true }, over));
+    const square = (noise, i) => noisy(noise, { source: 'shades', light: 0.6, dark: 0.6, stops: [stop(at(i))] });
+    const blend = (noise, i, j) => noisy(noise, { source: 'gradient', angle: 90, stops: spread([stop(at(i)), stop(at(j))]) });
+    const tile = (noise, i) => noisy(noise, { source: 'solid', noiseSize: 12, spread: 0.25, stops: [stop(at(i))] });
+    const strip = i => noisy('clouds', { source: 'shades', angle: 90, noiseMix: 0.5, stops: [stop(at(i))] });
+    return baseProject(palette, [
+      row(256, [square('clouds', 0), square('stones', 1), square('grain', 2), blend('clouds', 0, 4)]),
+      row(256, [blend('stones', 1, 5), square('grain', 3), square('clouds', 4), square('stones', 5)]),
+      row(128, [0, 1, 2, 3, 4, 5, 6, 7].map(i => tile(['grain', 'clouds', 'stones', 'grain'][i % 4], i))),
+      row(384, [0, 1, 2, 3, 4, 5].map(strip)),
+    ], { name: 'Material atlas' });
+  }
+
   // Fills gaps and fixes bad values so files from older versions or hand edits still open.
   function normalize(src) {
     src = src || {};
@@ -149,7 +171,7 @@ const Atlas = (() => {
     p.gapFill = src.gapFill === 'bleed' ? 'bleed' : 'color';
     p.mix = src.mix === 'srgb' ? 'srgb' : 'oklab';
     p.dither = src.dither !== false;
-    p.harmony = Color.HARMONIES[src.harmony] ? src.harmony : 'earthy';
+    p.harmony = Color.HARMONIES[src.harmony] || Color.MATERIALS[src.harmony] ? src.harmony : 'earthy';
     const sh = src.shading || {};
     p.shading = { hue: num(sh.hue, 10, 0, 90), light: num(sh.light, 1, 0, 2), dark: num(sh.dark, 1, 0, 2) };
 
@@ -184,7 +206,11 @@ const Atlas = (() => {
     out.w = num(c.w, 1, 0.001);
     out.source = ['solid', 'gradient', 'shades'].includes(c.source) ? c.source : 'solid';
     out.shape = c.shape === 'radial' ? 'radial' : 'linear';
-    out.mode = ['smooth', 'steps', 'mosaic'].includes(c.mode) ? c.mode : out.mode;
+    out.mode = ['smooth', 'steps', 'mosaic', 'noise'].includes(c.mode) ? c.mode : out.mode;
+    out.noise = NOISES.includes(c.noise) ? c.noise : out.noise;
+    out.noiseSize = num(c.noiseSize, out.noiseSize, 1, 1024);
+    out.noiseMix = num(c.noiseMix, out.noiseMix, 0, 1);
+    out.spread = num(c.spread, out.spread, 0, 1);
     out.angle = num(c.angle, 0, 0, 359);
     out.steps = Math.round(num(c.steps, 6, 2, 64));
     out.tile = num(c.tile, out.tile, 1, 512);
@@ -251,6 +277,15 @@ const Atlas = (() => {
     const stops = c.stops.slice().sort((a, b) => a.p - b.p);
     const k = c.mode === 'smooth' ? c.hardness : 0;
 
+    if (c.source === 'solid' && c.mode === 'noise') {
+      // A noisy solid: shades around its own shade, lighter at u = 0 and darker at u = 1.
+      const hex = hexOf(stops[0].c);
+      for (let i = 0; i < N; i++) {
+        const t = stops[0].s + c.spread * (1 - (2 * i) / (N - 1));
+        put(i, Color.shade(hex, t < -1 ? -1 : t > 1 ? 1 : t, p.shading));
+      }
+      return lut;
+    }
     if (c.source === 'solid' || (c.source === 'gradient' && stops.length < 2)) {
       const rgb = Color.shade(hexOf(stops[0].c), stops[0].s, p.shading);
       for (let i = 0; i < N; i++) put(i, rgb);
@@ -308,10 +343,89 @@ const Atlas = (() => {
   const byte = v => (v <= 0 ? 0 : v >= 255 ? 255 : (v + 0.5) | 0);
 
   // Interleaved gradient noise in [0, 1): an even, pattern-free threshold per pixel.
-  function noise(x, y) {
+  function ditherAt(x, y) {
     const f = 0.06711056 * x + 0.00583715 * y;
     const t = 52.9829189 * (f - Math.floor(f));
     return t - Math.floor(t);
+  }
+
+  // ---------- Texture noise ----------
+  // Coordinates are in noise features; px and py are wrap periods in features (0 = no wrap), so a
+  // seamless cell holds a whole number of features and its opposite edges meet.
+
+  const wrap = (a, period) => (period ? ((a % period) + period) % period : a);
+
+  function valueNoise(x, y, px, py, seed) {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    const xf = x - xi;
+    const yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf);
+    const v = yf * yf * (3 - 2 * yf);
+    const x0 = wrap(xi, px);
+    const x1 = wrap(xi + 1, px);
+    const y0 = wrap(yi, py);
+    const y1 = wrap(yi + 1, py);
+    const a = hash(x0, y0, seed);
+    const b = hash(x1, y0, seed);
+    const c = hash(x0, y1, seed);
+    const d = hash(x1, y1, seed);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+  }
+
+  // Five octaves of value noise; each octave doubles its period, so wrapping holds at every scale.
+  function clouds(x, y, px, py, seed) {
+    let t = 0;
+    let amp = 0.5;
+    let f = 1;
+    for (let o = 0; o < 5; o++) {
+      t += amp * valueNoise(x * f, y * f, px * f, py * f, seed + o * 1013);
+      f *= 2;
+      amp *= 0.5;
+    }
+    return t / 0.96875;
+  }
+
+  // Cobbles: a jittered Voronoi pattern with one random shade per stone and darker joints.
+  function stones(x, y, px, py, seed) {
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    let d1 = 9;
+    let d2 = 9;
+    let val = 0;
+    for (let j = -1; j <= 1; j++) {
+      for (let i = -1; i <= 1; i++) {
+        const gx = wrap(xi + i, px);
+        const gy = wrap(yi + j, py);
+        const ox = xi + i + 0.15 + 0.7 * hash(gx, gy, seed) - x;
+        const oy = yi + j + 0.15 + 0.7 * hash(gx, gy, seed + 7) - y;
+        const d = Math.sqrt(ox * ox + oy * oy);
+        if (d < d1) {
+          d2 = d1;
+          d1 = d;
+          val = hash(gx, gy, seed + 13);
+        } else if (d < d2) {
+          d2 = d;
+        }
+      }
+    }
+    const joint = Math.min(1, (d2 - d1) * 5);
+    return val * 0.75 + 0.15 - (1 - joint) * 0.35;
+  }
+
+  // Texture noise in [0, 1]: soft clouds, fine grain (specks over clouds) or stones.
+  function textureNoise(type, x, y, px, py, seed) {
+    let n;
+    if (type === 'stones') {
+      n = stones(x, y, px, py, seed);
+    } else if (type === 'grain') {
+      const k = 4; // specks per feature
+      const speck = hash(wrap(Math.floor(x * k), px * k), wrap(Math.floor(y * k), py * k), seed + 77);
+      n = 0.5 + (speck - 0.5) * 0.9 + (clouds(x, y, px, py, seed) - 0.5) * 1.2;
+    } else {
+      n = 0.5 + (clouds(x, y, px, py, seed) - 0.5) * 2.2;
+    }
+    return n < 0 ? 0 : n > 1 ? 1 : n;
   }
 
   // (x0, y0, cw, ch) is the cell; (ax0..ax1, ay0..ay1) the painted area, larger when gaps bleed.
@@ -321,12 +435,25 @@ const Atlas = (() => {
     const last = LUT_N - 1;
     const px = new Uint32Array(LUT_N);
     for (let i = 0; i < LUT_N; i++) px[i] = pack(byte(lut[i * 3]), byte(lut[i * 3 + 1]), byte(lut[i * 3 + 2]));
-    if (c.source === 'solid') {
+    const noisy = c.mode === 'noise';
+    const solid = c.source === 'solid';
+    if (solid && !noisy) {
       for (let y = ay0; y < ay1; y++) u32.fill(px[0], y * W + ax0, y * W + ax1);
       return;
     }
     const radial = c.shape === 'radial';
-    const seam = c.seamless && !radial;
+    // In noise mode seamless wraps the noise; the gradient keeps its direction.
+    const seam = c.seamless && !radial && !noisy;
+    let nx = 1;
+    let ny = 1;
+    if (noisy) {
+      const f = Math.max(1, c.noiseSize * s);
+      nx = Math.max(1, Math.round(cw / f));
+      ny = Math.max(1, Math.round(ch / f));
+    }
+    const wx = noisy && c.seamless ? nx : 0;
+    const wy = noisy && c.seamless ? ny : 0;
+    const mix = solid ? 1 : c.noiseMix;
     const mosaic = c.mode === 'mosaic';
     const steps = c.mode === 'steps';
     const n = Math.max(2, c.steps | 0);
@@ -343,8 +470,8 @@ const Atlas = (() => {
     }
     const jit = mosaic ? c.jitter * 0.5 : 0;
     const seed = c.seed | 0;
-    // Only smooth blends dither; flat bands and tiles keep exact colours.
-    const dither = p.dither && c.mode === 'smooth';
+    // Only smooth blends and noise dither; flat bands and tiles keep exact colours.
+    const dither = p.dither && (c.mode === 'smooth' || noisy);
     for (let y = ay0; y < ay1; y++) {
       let fy = (y + 0.5 - y0) / ch;
       fy = fy < 0 ? 0 : fy > 0.999999 ? 0.999999 : fy;
@@ -376,11 +503,13 @@ const Atlas = (() => {
         else if (jit) {
           u += (hash(ix, iy, seed) - 0.5) * jit;
           u = u < 0 ? 0 : u > 1 ? 1 : u;
+        } else if (noisy) {
+          u += (textureNoise(c.noise, fx * nx, fy * ny, wx, wy, seed) - u) * mix;
         }
         const i = (u * last + 0.5) | 0;
         if (dither) {
           const k = i * 3;
-          const d = noise(x, y) - 0.5;
+          const d = ditherAt(x, y) - 0.5;
           u32[rowStart + x] = pack(byte(lut[k] + d), byte(lut[k + 1] + d), byte(lut[k + 2] + d));
         } else {
           u32[rowStart + x] = px[i];
@@ -467,7 +596,7 @@ const Atlas = (() => {
 
   return {
     REF, SIZES, GRIDS, LOOK_KEYS, uid, cell,
-    exampleProject, blankProject, randomProject, normalize,
+    exampleProject, blankProject, randomProject, materialProject, normalize,
     layout, render, cssGradient, embed, extract,
   };
 })();
