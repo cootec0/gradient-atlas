@@ -528,6 +528,7 @@
       }
     }
     $('#overlay').innerHTML = h;
+    if (cellDrag) markCellDrag();
   }
 
   function drawTilePreview() {
@@ -1221,11 +1222,93 @@
     setTimeout(() => window.removeEventListener('click', swallow, true), 0);
   }
 
-  // Dragging a cell onto another swaps them; each place keeps its size.
+  // Dragging a cell onto another swaps them live: the other cell glides into the freed place, the
+  // dragged one shows where it will land and a thumbnail follows the pointer. Releasing keeps the
+  // swap; Esc or leaving the atlas puts everything back. Swaps keep each place's size, so the
+  // places stay where they were for the whole drag.
   let cellDrag = null;
+
   function startCellDrag(e) {
     const hit = e.target.closest('.hit');
-    if (hit && e.button === 0 && !e.shiftKey) cellDrag = { id: hit.dataset.cell, x: e.clientX, y: e.clientY, moved: false, over: null };
+    if (!hit || e.button !== 0) return;
+    e.preventDefault(); // no text selection or native drag, which would steal the pointer
+    if (e.shiftKey) return;
+    cellDrag = { id: hit.dataset.cell, x: e.clientX, y: e.clientY, moved: false, over: null, ghost: null, rows: null, places: null };
+    try { $('#overlay').setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
+  }
+
+  // Where each cell sits now, in canvas pixels and in CSS pixels of the preview.
+  function places() {
+    const k = view.clientWidth / view.width;
+    const out = {};
+    for (const R of lastLayout.rows) {
+      for (const C of R.cells) {
+        out[C.cell.id] = { px: [C.x0, R.y0, C.x1 - C.x0, R.y1 - R.y0], css: [C.x0 * k, R.y0 * k, (C.x1 - C.x0) * k, (R.y1 - R.y0) * k] };
+      }
+    }
+    return out;
+  }
+
+  function cellGhost(place) {
+    const [x, y, w, h] = place.px;
+    const k = Math.min(1, 120 / Math.max(place.css[2], place.css[3], 1));
+    const ghost = document.createElement('canvas');
+    ghost.className = 'cell-ghost';
+    ghost.width = Math.max(8, Math.round(w * k));
+    ghost.height = Math.max(8, Math.round(h * k));
+    ghost.style.width = Math.max(8, place.css[2] * k) + 'px';
+    ghost.style.height = Math.max(8, place.css[3] * k) + 'px';
+    ghost.getContext('2d').drawImage(view, x, y, w, h, 0, 0, ghost.width, ghost.height);
+    return document.body.appendChild(ghost);
+  }
+
+  // Cells whose place changed fly from the old place to the new one over the redrawn preview.
+  function flyMoves(shot, before, after) {
+    const box = $('.canvas-box');
+    for (const [id, to] of Object.entries(after)) {
+      const from = before[id];
+      if (!from || from.css.join() === to.css.join()) continue;
+      const [x, y, w, h] = from.px;
+      const piece = document.createElement('canvas');
+      piece.className = 'cell-fly';
+      piece.width = Math.max(1, w);
+      piece.height = Math.max(1, h);
+      piece.getContext('2d').drawImage(shot, x, y, w, h, 0, 0, w, h);
+      Object.assign(piece.style, { left: from.css[0] + 'px', top: from.css[1] + 'px', width: from.css[2] + 'px', height: from.css[3] + 'px' });
+      box.appendChild(piece);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const sx = to.css[2] / from.css[2];
+        const sy = to.css[3] / from.css[3];
+        piece.style.transform = `translate(${to.css[0] - from.css[0]}px, ${to.css[1] - from.css[1]}px) scale(${sx}, ${sy})`;
+      }));
+      const drop = () => piece.remove();
+      piece.addEventListener('transitionend', drop);
+      setTimeout(drop, 400);
+    }
+  }
+
+  // Shows the atlas with the dragged cell swapped with `over` (or unswapped), animating the change.
+  function previewSwap(over) {
+    if (over === cellDrag.over) return;
+    const shot = document.createElement('canvas');
+    shot.width = view.width;
+    shot.height = view.height;
+    shot.getContext('2d').drawImage(view, 0, 0);
+    const before = places();
+    project.rows = clone(cellDrag.rows);
+    if (over) swapInPlace(cellDrag.id, over);
+    cellDrag.over = over;
+    drawNow();
+    flyMoves(shot, before, places());
+  }
+
+  function markCellDrag() {
+    const live = cellDrag && cellDrag.moved;
+    $$('#overlay .hit').forEach(h => {
+      const mine = live && h.dataset.cell === cellDrag.id;
+      h.classList.toggle('lift', mine && !cellDrag.over); // its own place, nothing swapped yet
+      h.classList.toggle('drop', mine && !!cellDrag.over); // where it lands
+    });
   }
 
   window.addEventListener('pointermove', e => {
@@ -1233,43 +1316,59 @@
     if (!cellDrag.moved) {
       if (Math.hypot(e.clientX - cellDrag.x, e.clientY - cellDrag.y) < 6) return;
       cellDrag.moved = true;
+      cellDrag.rows = clone(project.rows);
+      cellDrag.places = places();
+      cellDrag.ghost = cellGhost(cellDrag.places[cellDrag.id]);
       document.body.classList.add('dragging-cell');
-      const own = $(`#overlay .hit[data-cell="${cellDrag.id}"]`);
-      if (own) own.classList.add('lift');
+      markCellDrag();
     }
-    const under = document.elementFromPoint(e.clientX, e.clientY);
-    const target = under && under.closest('#overlay .hit');
-    const id = target && target.dataset.cell !== cellDrag.id ? target.dataset.cell : null;
-    if (id === cellDrag.over) return;
-    $$('#overlay .hit.drop').forEach(h => h.classList.remove('drop'));
-    if (id) target.classList.add('drop');
-    cellDrag.over = id;
+    cellDrag.ghost.style.left = e.clientX + 'px';
+    cellDrag.ghost.style.top = e.clientY + 'px';
+    // Hit-test against the places at the start: they do not move while cells swap.
+    const box = $('.canvas-box').getBoundingClientRect();
+    const x = e.clientX - box.left;
+    const y = e.clientY - box.top;
+    if (x < -24 || y < -24 || x > box.width + 24 || y > box.height + 24) return previewSwap(null);
+    let under = null;
+    for (const [id, pl] of Object.entries(cellDrag.places)) {
+      const [px, py, pw, ph] = pl.css;
+      if (x >= px && x < px + pw && y >= py && y < py + ph) under = id;
+    }
+    if (under === null) return; // in a gap: keep the current preview
+    previewSwap(under === cellDrag.id ? null : under);
   });
 
-  function endCellDrag() {
+  function stopCellDrag(keep) {
     if (!cellDrag) return;
-    const { moved, id, over } = cellDrag;
+    const { moved, id, over, ghost } = cellDrag;
+    if (!moved) {
+      cellDrag = null; // a plain click selects as usual
+      return;
+    }
+    if (!keep && over) previewSwap(null);
     cellDrag = null;
-    if (!moved) return; // a plain click selects as usual
+    if (ghost) ghost.remove();
     document.body.classList.remove('dragging-cell');
-    $$('#overlay .hit').forEach(h => h.classList.remove('lift', 'drop'));
+    markCellDrag();
     swallowNextClick();
-    if (over) swapCells(id, over);
+    if (keep && over) {
+      sel = id;
+      picked.clear();
+      done();
+      toast('Cells swapped · Ctrl+Z to undo');
+    }
   }
-  window.addEventListener('pointerup', endCellDrag);
-  window.addEventListener('pointercancel', endCellDrag);
+  window.addEventListener('pointerup', () => stopCellDrag(true));
+  window.addEventListener('pointercancel', () => stopCellDrag(false));
+  $('#overlay').addEventListener('dragstart', e => e.preventDefault());
 
-  function swapCells(a, b) {
+  function swapInPlace(a, b) {
     const fa = find(a);
     const fb = find(b);
     if (!fa || !fb) return;
     [fa.cell.w, fb.cell.w] = [fb.cell.w, fa.cell.w];
     fa.row.cells[fa.ci] = fb.cell;
     fb.row.cells[fb.ci] = fa.cell;
-    sel = a;
-    picked.clear();
-    done();
-    toast('Cells swapped · Ctrl+Z to undo');
   }
 
   // Gradient stops: click the bar to add, drag to move, drag away to remove.
@@ -1343,6 +1442,8 @@
     if (e.key === ' ') {
       e.preventDefault();
       ACTIONS[e.shiftKey ? 'layout-gen' : 'pal-gen']();
+    } else if (e.key === 'Escape' && cellDrag) {
+      stopCellDrag(false);
     } else if (e.key === 'Escape') {
       closeMenus();
       if (sel) select(null);
