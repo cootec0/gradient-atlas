@@ -363,6 +363,9 @@ input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offs
 .hit { position: absolute; border-radius: 2px; cursor: pointer; transition: box-shadow 0.12s; }
 .hit:hover { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6); }
 .hit.on { z-index: 1; box-shadow: 0 0 0 2px var(--accent), 0 0 0 6px var(--accent-soft); }
+.hit.lift { outline: 2px dashed rgba(255, 255, 255, 0.85); outline-offset: -3px; }
+.hit.drop { z-index: 1; background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+body.dragging-cell, body.dragging-cell * { cursor: grabbing !important; user-select: none; }
 .gut { position: absolute; z-index: 2; touch-action: none; }
 .gut.v { width: 10px; cursor: col-resize; }
 .gut.h { height: 10px; cursor: row-resize; }
@@ -410,6 +413,7 @@ body.dragging-y, body.dragging-y * { cursor: row-resize !important; user-select:
 }
 .chip:hover { transform: translateY(-1px); }
 .chip.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.chip.own { background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.2) 0 3px, transparent 3px 7px), var(--panel-2); }
 .gbar {
   position: relative;
   height: 34px;

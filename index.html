@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
 <!-- Raise ?v= on style.css and the scripts with every release, so browsers never mix old and new files. -->
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=9">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -94,6 +94,14 @@
         <div class="hint">Locked colours stay put. Press <kbd>Space</kbd> to roll again.</div>
       </div>
       <div class="block">
+        <div class="block-head"><span class="block-title">Layout</span></div>
+        <div class="gen-row">
+          <select id="layoutStyle" aria-label="Layout style"></select>
+          <button class="btn" data-act="layout-gen" title="New layout in this style (Shift+Space)"><svg class="ic"><use href="#i-dice"/></svg> Generate</button>
+        </div>
+        <div class="hint">Colours and sheet settings stay. Press <kbd>Shift</kbd> <kbd>Space</kbd> to roll again.</div>
+      </div>
+      <div class="block">
         <div class="block-head"><span class="block-title">Shading</span></div>
         <div id="shading"></div>
       </div>
@@ -112,7 +120,7 @@
       </div>
       <div class="stage-bar">
         <button class="btn sm" data-act="row-add-end"><svg class="ic"><use href="#i-rows"/></svg> Add row</button>
-        <span>Click a cell to edit it · drag the gaps to resize</span>
+        <span>Click a cell to edit it · drag the gaps to resize · drag a cell to swap · Shift+click picks several</span>
         <span class="spacer"></span>
         <span id="sizeInfo" class="mono"></span>
       </div>
@@ -126,8 +134,8 @@
 <div class="drop">Drop a Gradient Atlas PNG to open it</div>
 <input type="file" id="fileInput" accept="image/png" hidden>
 
-<script src="js/color.js?v=7"></script>
-<script src="js/atlas.js?v=7"></script>
-<script src="js/app.js?v=7"></script>
+<script src="js/color.js?v=9"></script>
+<script src="js/atlas.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
 </body>
 </html>

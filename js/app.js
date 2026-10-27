@@ -10,6 +10,7 @@
 
   let project;
   let sel = null; // selected cell id
+  const picked = new Set(); // more cells picked with Shift+click
   let selStop = 0; // selected stop of a gradient cell
   let clip = null; // copied cell
   let lastLayout = null; // layout of the preview canvas, in canvas pixels
@@ -101,6 +102,7 @@
     hist.i = i;
     project = JSON.parse(hist.stack[i]);
     if (sel && !find(sel)) sel = null;
+    picked.clear();
     persist(hist.stack[i]);
     renderAll();
   }
@@ -156,6 +158,13 @@
       `<button type="button" class="chip${p.id === current ? ' on' : ''}" data-chip="${p.id}" style="--c:${p.color}" title="${p.color}" aria-label="Use ${p.color}"></button>`).join('')}</div>`;
   }
 
+  // Noise colour: the first chip keeps the cell's own colours.
+  function noiseChips(c) {
+    const own = `<button type="button" class="chip own${c.noiseColor ? '' : ' on'}" data-noise-chip="" title="The cell's own colours" aria-label="Use the cell's own colours"></button>`;
+    return `<div class="chips">${own}${project.palette.map(p =>
+      `<button type="button" class="chip${p.id === c.noiseColor ? ' on' : ''}" data-noise-chip="${p.id}" style="--c:${p.color}" title="${p.color}" aria-label="Paint the noise in ${p.color}"></button>`).join('')}</div>`;
+  }
+
   function shadeTrack(hex) {
     return `linear-gradient(90deg, ${[-1, -0.5, 0, 0.5, 1].map((t, i) => `${shadeHex(hex, t)} ${i * 25}%`).join(', ')})`;
   }
@@ -169,6 +178,7 @@
     $('#sizeW').value = project.width;
     $('#sizeH').value = project.height;
     $('#harmony').value = project.harmony;
+    $('#layoutStyle').value = project.layout;
     renderPalette();
     renderSheet();
     renderInspector();
@@ -195,7 +205,7 @@
   // Updates colours shown in the panels without rebuilding inputs that may be in use.
   function refreshColors() {
     for (const p of project.palette) {
-      $$(`[data-swatch="${p.id}"], [data-chip="${p.id}"]`).forEach(el => el.style.setProperty('--c', p.color));
+      $$(`[data-swatch="${p.id}"], [data-chip="${p.id}"], [data-noise-chip="${p.id}"]`).forEach(el => el.style.setProperty('--c', p.color));
       const ramp = $(`[data-ramp="${p.id}"]`);
       if (ramp) ramp.innerHTML = rampHtml(p.color);
     }
@@ -210,6 +220,8 @@
     });
     const shadeRange = $('[data-bind="s:s"]');
     if (shadeRange) shadeRange.style.setProperty('--track', shadeTrack(palColor(c.stops[stopIndex(c)].c)));
+    const noiseShade = $('[data-bind="k:noiseShade"]');
+    if (noiseShade && c.noiseColor) noiseShade.style.setProperty('--track', shadeTrack(palColor(c.noiseColor)));
   }
 
   function renderSheet() {
@@ -241,6 +253,10 @@
     const f = current();
     if (!f) {
       box.innerHTML = emptyInspector();
+      return;
+    }
+    if (selection().length > 1) {
+      box.innerHTML = selectionInspector();
       return;
     }
     const { row, ri, cell: c, ci } = f;
@@ -361,14 +377,35 @@
     return c.shape === 'linear' ? toggle('k:seamless', c.seamless, 'Seamless', 'Mirrors the gradient so the cell tiles without a seam') : '';
   }
 
+  const NOISE_NAMES = { clouds: 'Clouds', grain: 'Grain', stones: 'Stones', voronoi: 'Voronoi', cracks: 'Cracks', ridged: 'Ridged', turbulence: 'Turbulence' };
+  const LAYERED_NOISES = ['clouds', 'grain', 'ridged', 'turbulence']; // the ones built from octaves
+
   function noiseBody(c) {
-    const amount = c.source === 'solid'
-      ? range({ label: 'Variation', bind: 'k:spread', min: 0, max: 100, value: c.spread, mul: 100, fmt: 'pct' })
-      : range({ label: 'Noise mix', bind: 'k:noiseMix', min: 0, max: 100, value: c.noiseMix, mul: 100, fmt: 'pct' });
-    return seg('k:noise', c.noise, [['clouds', 'Clouds'], ['grain', 'Grain'], ['stones', 'Stones']])
+    const amount = c.noiseColor
+      ? range({ label: 'Noise colour amount', bind: 'k:noiseMix', min: 0, max: 100, value: c.noiseMix, mul: 100, fmt: 'pct' })
+      : c.source === 'solid'
+        ? range({ label: 'Variation', bind: 'k:spread', min: 0, max: 100, value: c.spread, mul: 100, fmt: 'pct' })
+        : range({ label: 'Noise mix', bind: 'k:noiseMix', min: 0, max: 100, value: c.noiseMix, mul: 100, fmt: 'pct' });
+    const types = Atlas.NOISES.map(n => `<option value="${n}"${n === c.noise ? ' selected' : ''}>${NOISE_NAMES[n]}</option>`).join('');
+    return `<div class="field"><div class="field-top"><label>Noise</label></div><select data-bind="k:noise" aria-label="Noise type">${types}</select></div>`
       + range({ label: 'Noise size', bind: 'k:noiseSize', min: 2, max: 256, value: c.noiseSize, fmt: 'px' })
+      + (LAYERED_NOISES.includes(c.noise) ? range({ label: 'Detail', bind: 'k:noiseDetail', min: 1, max: 8, value: c.noiseDetail }) : '')
+      + range({ label: 'Contrast', bind: 'k:noiseContrast', min: 0, max: 300, step: 5, value: c.noiseContrast, mul: 100, fmt: 'pct' })
+      + `<div class="sub">Noise colour</div>${noiseChips(c)}`
+      + (c.noiseColor ? range({ label: 'Noise colour shade', bind: 'k:noiseShade', min: -100, max: 100, value: c.noiseShade, mul: 100, fmt: 'shade', track: shadeTrack(palColor(c.noiseColor)) }) : '')
       + amount
       + `<button class="btn sm wide" data-act="reseed" style="margin:-2px 0 14px">${icon('dice')} Reshuffle noise</button>`;
+  }
+
+  // A cell keeps its noise settings per colour source and noise type ('gradient/stones'), so
+  // switching back brings them back. A type seen for the first time starts at its own size.
+  function switchNoise(c, change, freshType) {
+    c.noiseMemory = c.noiseMemory || {};
+    c.noiseMemory[`${c.source}/${c.noise}`] = Object.fromEntries(Atlas.NOISE_KEYS.map(k => [k, c[k]]));
+    change(c);
+    const saved = c.noiseMemory[`${c.source}/${c.noise}`];
+    if (saved) Object.assign(c, saved);
+    else if (freshType) Object.assign(c, Atlas.NOISE_START[c.noise]);
   }
 
   function modeBody(c) {
@@ -382,6 +419,29 @@
     return range({ label: 'Hardness', bind: 'k:hardness', min: 0, max: 100, value: c.hardness, mul: 100, fmt: 'pct' });
   }
 
+  function selectionInspector() {
+    const list = selection();
+    const perRow = new Map();
+    for (const f of list) perRow.set(f.row, (perRow.get(f.row) || 0) + 1);
+    const sameRow = [...perRow.values()].some(k => k > 1);
+    return `
+      <div class="insp-head">
+        <div><div class="eyebrow">Selection</div><div class="insp-title">${list.length} cells</div></div>
+        <div class="tools"><button class="icon-btn" data-act="sel-clear" title="Clear selection (Esc)">${icon('x')}</button></div>
+      </div>
+      <section class="group">
+        <div class="group-title">Even out</div>
+        <div class="btn-grid">
+          <button class="btn" data-act="even-width"${sameRow ? '' : ' disabled'}>Same width</button>
+          <button class="btn" data-act="even-height"${perRow.size > 1 ? '' : ' disabled'}>Same height</button>
+        </div>
+        <div class="hint">Same width: picked cells that share a row split their space evenly. Same height: the rows they sit in get one height.</div>
+      </section>
+      <section class="group">
+        <div class="hint" style="margin:0">Shift+click adds or removes cells. Click one cell to edit it.</div>
+      </section>`;
+  }
+
   function emptyInspector() {
     const sample = project.palette.slice(0, 9).map(p => `<i style="background:${p.color}"></i>`).join('');
     return `<div class="empty">
@@ -391,11 +451,14 @@
       <button class="btn" data-act="row-add-end">${icon('rows')} Add row</button>
       <div class="keys">
         <div><kbd>Space</kbd><span>New palette</span></div>
+        <div><kbd>Shift Space</kbd><span>New layout</span></div>
         <div><kbd>Ctrl Z</kbd><kbd>Ctrl Y</kbd><span>Undo, redo</span></div>
         <div><kbd>← ↑ → ↓</kbd><span>Move between cells</span></div>
         <div><kbd>Ctrl D</kbd><span>Duplicate cell</span></div>
         <div><kbd>Ctrl C</kbd><kbd>Ctrl V</kbd><span>Copy, paste cell</span></div>
         <div><kbd>Del</kbd><span>Delete cell</span></div>
+        <div><kbd>Shift click</kbd><span>Pick several cells</span></div>
+        <div><kbd>Drag cell</kbd><span>Swap with another</span></div>
         <div><kbd>Ctrl S</kbd><span>Export PNG</span></div>
       </div>
     </div>`;
@@ -453,7 +516,7 @@
     let h = '';
     for (const R of L.rows) {
       for (const C of R.cells) {
-        h += `<div class="hit${C.cell.id === sel ? ' on' : ''}" data-cell="${C.cell.id}" style="left:${C.x0 * k}px;top:${R.y0 * k}px;width:${(C.x1 - C.x0) * k}px;height:${(R.y1 - R.y0) * k}px"></div>`;
+        h += `<div class="hit${isSelected(C.cell.id) ? ' on' : ''}" data-cell="${C.cell.id}" style="left:${C.x0 * k}px;top:${R.y0 * k}px;width:${(C.x1 - C.x0) * k}px;height:${(R.y1 - R.y0) * k}px"></div>`;
       }
       for (let ci = 0; ci < R.cells.length - 1; ci++) {
         const x = ((R.cells[ci].x1 + R.cells[ci + 1].x0) / 2) * k;
@@ -499,8 +562,32 @@
   function select(id) {
     sel = id;
     selStop = 0;
-    $$('#overlay .hit').forEach(h => h.classList.toggle('on', h.dataset.cell === id));
+    picked.clear();
+    markSelection();
     renderInspector();
+  }
+
+  // Shift+click adds a cell to the selection or takes it out.
+  function toggleSelect(id) {
+    if (!sel) return select(id);
+    if (id === sel) {
+      const next = picked.values().next().value || null;
+      picked.delete(next);
+      sel = next;
+    } else if (picked.has(id)) {
+      picked.delete(id);
+    } else {
+      picked.add(id);
+    }
+    markSelection();
+    renderInspector();
+  }
+
+  const isSelected = id => id === sel || picked.has(id);
+  const selection = () => [sel, ...picked].map(find).filter(Boolean);
+
+  function markSelection() {
+    $$('#overlay .hit').forEach(h => h.classList.toggle('on', isSelected(h.dataset.cell)));
   }
 
   function moveSelection(key) {
@@ -531,8 +618,42 @@
   }
 
   function sheetSettings() {
-    const { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony } = project;
-    return { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony, shading: clone(project.shading) };
+    const { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony, layout } = project;
+    return { width, height, margin, gap, gapFill, gapColor, mix, dither, snap, grid, harmony, layout, shading: clone(project.shading) };
+  }
+
+  const PRESET_SET = 8; // colours rolled from a whole popular palette
+
+  // Cells using one palette entry switch to another.
+  function retarget(fromId, toId) {
+    for (const c of allCells()) {
+      for (const st of c.stops) if (st.c === fromId) st.c = toId;
+      if (c.noiseColor === fromId) c.noiseColor = toId;
+    }
+  }
+
+  function closest(hex, palette) {
+    let best = palette[0];
+    for (const p of palette) if (Color.distance(p.color, hex) < Color.distance(best.color, hex)) best = p;
+    return best;
+  }
+
+  // Puts these colours in the palette in order, reusing entry ids so cells keep their slots;
+  // cells of entries that go away take the closest new colour.
+  function replacePalette(colors) {
+    const old = project.palette;
+    const next = colors.map((color, i) => ({ id: old[i] ? old[i].id : Atlas.uid('p'), color, locked: false }));
+    const kept = new Set(next.map(p => p.id));
+    const keep = id => {
+      if (kept.has(id)) return id;
+      const was = old.find(p => p.id === id);
+      return closest(was ? was.color : next[0].color, next).id;
+    };
+    for (const c of allCells()) {
+      for (const st of c.stops) st.c = keep(st.c);
+      if (c.noiseColor) c.noiseColor = keep(c.noiseColor);
+    }
+    project.palette = next;
   }
 
   const ACTIONS = {
@@ -566,9 +687,7 @@
       if (project.palette.length <= 1) return toast('Keep at least one colour', true);
       const gone = project.palette.find(p => p.id === el.dataset.id);
       project.palette = project.palette.filter(p => p !== gone);
-      let best = project.palette[0];
-      for (const p of project.palette) if (Color.distance(p.color, gone.color) < Color.distance(best.color, gone.color)) best = p;
-      for (const c of allCells()) for (const st of c.stops) if (st.c === gone.id) st.c = best.id;
+      retarget(gone.id, closest(gone.color, project.palette).id);
       done();
       toast('Colour removed, its cells use the closest one · Ctrl+Z to undo');
     },
@@ -580,9 +699,47 @@
     },
     'pal-gen'() {
       if (project.palette.every(p => p.locked)) return toast('Every colour is locked', true);
+      const fixed = Color.PALETTES[project.harmony];
+      let removed = [];
+      if (fixed && project.palette.length >= fixed.colors.length) {
+        if (fixed.colors.length <= PRESET_SET) return toast(`All ${fixed.name} colours are in already.`);
+        // The whole preset is in: roll a smaller related set from it; locked colours stay.
+        let free = PRESET_SET - project.palette.filter(p => p.locked).length;
+        const next = project.palette.filter(p => p.locked || free-- > 0);
+        removed = project.palette.filter(p => !next.includes(p));
+        project.palette = next;
+      }
       const cols = Color.generate(project.palette, project.harmony);
       project.palette.forEach((p, i) => { p.color = cols[i]; });
+      for (const gone of removed) retarget(gone.id, closest(gone.color, project.palette).id);
       done();
+      if (removed.length) toast(`${project.palette.length} ${fixed.name} colours · Ctrl+Z brings back all ${fixed.colors.length}`);
+    },
+    'sel-clear'() {
+      select(null);
+    },
+    'even-width'() {
+      const perRow = new Map();
+      for (const f of selection()) perRow.set(f.row, (perRow.get(f.row) || []).concat(f.cell));
+      for (const cells of perRow.values()) {
+        if (cells.length < 2) continue;
+        const w = cells.reduce((a, c) => a + c.w, 0) / cells.length;
+        cells.forEach(c => { c.w = w; });
+      }
+      done();
+    },
+    'even-height'() {
+      const rows = [...new Set(selection().map(f => f.row))];
+      if (rows.length < 2) return;
+      const h = rows.reduce((a, r) => a + r.h, 0) / rows.length;
+      rows.forEach(r => { r.h = h; });
+      done();
+    },
+    'layout-gen'() {
+      project.rows = Atlas.layoutRows(project.layout, project.palette);
+      sel = null;
+      done();
+      toast(`${Atlas.LAYOUTS[project.layout]} layout · Ctrl+Z to undo`);
     },
 
     'cell-left'() {
@@ -822,11 +979,18 @@
     if (final) commit();
   }
 
+  const asValue = raw => (/^-?\d+(\.\d+)?$/.test(raw) ? +raw : raw);
+
   function onSeg(btn) {
     const bind = btn.parentElement.dataset.seg;
-    const raw = btn.dataset.v;
-    apply(bind, /^-?\d+(\.\d+)?$/.test(raw) ? +raw : raw);
-    if (bind === 'k:source') ensureStops(current().cell);
+    const v = asValue(btn.dataset.v);
+    const f = current();
+    if (bind === 'k:source' && f) {
+      switchNoise(f.cell, c => { c.source = v; });
+      ensureStops(f.cell);
+    } else {
+      apply(bind, v);
+    }
     if (bind.startsWith('p:')) renderSheet();
     else renderInspector();
     draw();
@@ -836,7 +1000,8 @@
   function onChip(chip) {
     const f = current();
     if (!f) return;
-    f.cell.stops[stopIndex(f.cell)].c = chip.dataset.chip;
+    if (chip.dataset.noiseChip !== undefined) f.cell.noiseColor = chip.dataset.noiseChip;
+    else f.cell.stops[stopIndex(f.cell)].c = chip.dataset.chip;
     renderInspector();
     draw();
     commit();
@@ -873,8 +1038,13 @@
       draw();
       commit();
     } else if (t.matches('select[data-bind]')) {
-      apply(t.dataset.bind, +t.value);
-      flashGrid();
+      const bind = t.dataset.bind;
+      const f = current();
+      if (bind === 'k:noise' && f) switchNoise(f.cell, c => { c.noise = t.value; }, true);
+      else apply(bind, asValue(t.value));
+      if (bind === 'p:grid') flashGrid();
+      else renderInspector();
+      draw();
       commit();
     } else if (t.id === 'projName') {
       project.name = t.value.trim() || 'Atlas';
@@ -887,13 +1057,22 @@
       draw();
       commit();
     } else if (t.id === 'harmony') {
-      // Picking a style rolls a palette in it right away.
+      // Picking a style rolls a palette in it right away; a popular palette comes in whole.
       project.harmony = t.value;
-      if (project.palette.some(p => !p.locked)) {
+      const fixed = Color.PALETTES[t.value];
+      if (fixed) {
+        replacePalette(fixed.colors);
+        done();
+        toast(`${fixed.name}: ${fixed.colors.length} colours · Ctrl+Z to undo`);
+      } else if (project.palette.some(p => !p.locked)) {
         ACTIONS['pal-gen']();
         toast(`${t.options[t.selectedIndex].text} palette · Ctrl+Z to undo`);
       }
       commit();
+    } else if (t.id === 'layoutStyle') {
+      // Picking a layout style rolls a layout in it right away.
+      project.layout = t.value;
+      ACTIONS['layout-gen']();
     } else if (t.id === 'fileInput') {
       openFile(t.files[0]);
       t.value = '';
@@ -910,10 +1089,10 @@
     }
     const segBtn = t.closest('[data-seg] button');
     if (segBtn) return onSeg(segBtn);
-    const chip = t.closest('[data-chip]');
+    const chip = t.closest('[data-chip], [data-noise-chip]');
     if (chip) return onChip(chip);
     const hit = t.closest('.hit');
-    if (hit) return select(hit.dataset.cell);
+    if (hit) return e.shiftKey ? toggleSelect(hit.dataset.cell) : select(hit.dataset.cell);
     const menuBtn = t.closest('[data-menu]');
     if (menuBtn) {
       const menu = menuBtn.parentElement;
@@ -934,7 +1113,10 @@
   // matches the texture; holding Ctrl moves freely.
   $('#overlay').addEventListener('pointerdown', e => {
     const gut = e.target.closest('.gut');
-    if (!gut) return;
+    if (!gut) {
+      startCellDrag(e);
+      return;
+    }
     e.preventDefault();
     const [kind, a, b] = gut.dataset.gut.split(':');
     const X = Atlas.layout(project, project.width, project.height);
@@ -1025,15 +1207,70 @@
     dragTip().classList.remove('show');
     document.body.classList.remove('dragging-x', 'dragging-y');
     draw();
-    // The click that ends a drag must not select the cell under the pointer.
-    const swallow = ev => ev.stopPropagation();
-    window.addEventListener('click', swallow, { capture: true, once: true });
-    setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+    swallowNextClick();
     renderInspector();
     commit();
   }
   window.addEventListener('pointerup', endDrag);
   window.addEventListener('pointercancel', endDrag);
+
+  // The click that ends a drag must not select the cell under the pointer.
+  function swallowNextClick() {
+    const swallow = ev => ev.stopPropagation();
+    window.addEventListener('click', swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener('click', swallow, true), 0);
+  }
+
+  // Dragging a cell onto another swaps them; each place keeps its size.
+  let cellDrag = null;
+  function startCellDrag(e) {
+    const hit = e.target.closest('.hit');
+    if (hit && e.button === 0 && !e.shiftKey) cellDrag = { id: hit.dataset.cell, x: e.clientX, y: e.clientY, moved: false, over: null };
+  }
+
+  window.addEventListener('pointermove', e => {
+    if (!cellDrag) return;
+    if (!cellDrag.moved) {
+      if (Math.hypot(e.clientX - cellDrag.x, e.clientY - cellDrag.y) < 6) return;
+      cellDrag.moved = true;
+      document.body.classList.add('dragging-cell');
+      const own = $(`#overlay .hit[data-cell="${cellDrag.id}"]`);
+      if (own) own.classList.add('lift');
+    }
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const target = under && under.closest('#overlay .hit');
+    const id = target && target.dataset.cell !== cellDrag.id ? target.dataset.cell : null;
+    if (id === cellDrag.over) return;
+    $$('#overlay .hit.drop').forEach(h => h.classList.remove('drop'));
+    if (id) target.classList.add('drop');
+    cellDrag.over = id;
+  });
+
+  function endCellDrag() {
+    if (!cellDrag) return;
+    const { moved, id, over } = cellDrag;
+    cellDrag = null;
+    if (!moved) return; // a plain click selects as usual
+    document.body.classList.remove('dragging-cell');
+    $$('#overlay .hit').forEach(h => h.classList.remove('lift', 'drop'));
+    swallowNextClick();
+    if (over) swapCells(id, over);
+  }
+  window.addEventListener('pointerup', endCellDrag);
+  window.addEventListener('pointercancel', endCellDrag);
+
+  function swapCells(a, b) {
+    const fa = find(a);
+    const fb = find(b);
+    if (!fa || !fb) return;
+    [fa.cell.w, fb.cell.w] = [fb.cell.w, fa.cell.w];
+    fa.row.cells[fa.ci] = fb.cell;
+    fb.row.cells[fb.ci] = fa.cell;
+    sel = a;
+    picked.clear();
+    done();
+    toast('Cells swapped · Ctrl+Z to undo');
+  }
 
   // Gradient stops: click the bar to add, drag to move, drag away to remove.
   $('#inspector').addEventListener('pointerdown', e => {
@@ -1105,7 +1342,7 @@
     if (e.altKey) return;
     if (e.key === ' ') {
       e.preventDefault();
-      ACTIONS['pal-gen']();
+      ACTIONS[e.shiftKey ? 'layout-gen' : 'pal-gen']();
     } else if (e.key === 'Escape') {
       closeMenus();
       if (sel) select(null);
@@ -1144,8 +1381,12 @@
     $('#sizeW').innerHTML = sizes;
     $('#sizeH').innerHTML = sizes;
     const options = list => Object.entries(list).map(([k, v]) => `<option value="${k}">${v.name || v}</option>`).join('');
+    const popular = Object.entries(Color.PALETTES).map(([k, v]) =>
+      `<option value="${k}"${v.by ? ` title="by ${v.by}, from Lospec"` : ''}>${v.name} · ${v.colors.length}</option>`).join('');
     $('#harmony').innerHTML = `<optgroup label="Colour styles">${options(Color.HARMONIES)}</optgroup>`
-      + `<optgroup label="Materials">${options(Color.MATERIALS)}</optgroup>`;
+      + `<optgroup label="Materials">${options(Color.MATERIALS)}</optgroup>`
+      + `<optgroup label="Popular palettes">${popular}</optgroup>`;
+    $('#layoutStyle').innerHTML = options(Atlas.LAYOUTS);
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(STORE)); } catch (e) { saved = null; }
     project = Atlas.normalize(saved && saved.app === 'gradient-atlas' ? saved : Atlas.exampleProject());
